@@ -1,2 +1,8 @@
 Public release of code for analysis for COS cohort 
-Data available here: https://www.synapse.org/#!Synapse:syn9907463
+
+Run code in R: rmarkdown::render("analysis_public_release.Rmd")
+
+Code automatically downloads data from Synapse project: Data available here: https://www.synapse.org/#!Synapse:syn9907463
+
+You must have Synapse set up and have permission to read download this data
+ 
