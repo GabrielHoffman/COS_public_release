@@ -1,0 +1,333 @@
+---
+title: "hiPSC models of Schizophrenia"
+subtitle: 'Public release of data and code from Hoffman, et al. (submitted)'
+author: "Developed by [Gabriel Hoffman](http://gabrielhoffman.github.io/)"
+date: "Run on `r Sys.Date()`"
+documentclass: article
+output: 
+  html_document:
+  toc: true
+---
+
+Data is available on Synapse.
+
+## Summary
+Plot expression around CNV regions
+
+<!--- 
+# run analysis
+cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
+rmarkdown::render("CNV.Rmd")
+--->
+
+```{r load.always, cache=FALSE, echo=FALSE, message=FALSE, results='hide'}
+suppressPackageStartupMessages(library(synapseClient))
+
+synapseLogin()
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(ape))
+suppressPackageStartupMessages(library(mixtools))
+suppressPackageStartupMessages(library(latex2exp))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(preprocessCore))
+suppressPackageStartupMessages(library(colortools))
+suppressPackageStartupMessages(library(xtable))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(foreach))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(GenomicRanges))
+suppressPackageStartupMessages(library(reshape2))
+suppressPackageStartupMessages(library(ggrepel))
+
+suppressPackageStartupMessages(library(EnsDb.Hsapiens.v70))
+suppressPackageStartupMessages(library(ggbio))
+txdb = EnsDb.Hsapiens.v70
+data(hg19IdeogramCyto, package = "biovizBase")
+
+# allowWGCNAThreads(nthreads)
+
+options(xtable.type="html")
+
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=TRUE,
+  error = FALSE,
+  tidy = FALSE,
+  cache = TRUE,
+  dev = c("png", "pdf"), 
+  fig.width=7, fig.height=7)
+
+options(markdown.HTML.stylesheet = 'css/custom.css')
+```
+
+
+
+```{r load.data}
+# get gene counts and expression cutoff
+geneCounts = as.matrix(read.csv(getFileLocation(synGet( 'syn9908113' )), header=TRUE, row.names=1, check.names=FALSE))
+# exonCounts = as.matrix(read.csv(getFileLocation(synGet( 'syn7113739' )), header=TRUE, row.names=1, check.names=FALSE))
+isexpr = read.csv(getFileLocation(synGet( 'syn9908114' )), row.names=1, header=FALSE)[,1]
+# isexpr_exon = read.csv(getFileLocation(synGet( 'syn7113733' )), row.names=1, header=FALSE)[,1]
+
+# get gene annotations
+geneInfo = read.table(getFileLocation(synGet( 'syn9909914' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
+
+# get my metadata
+info = read.csv(getFileLocation(synGet( 'syn9908174' )), header=TRUE)
+info$Donor = factor(info$Donor)
+idx = grep("(N|F)$", info$ID, invert=TRUE)
+info$ID[idx] = gsub("-2$", "", as.character(info$ID[idx]))
+colnames(geneCounts)[idx] = gsub("-2$", "R", as.character(colnames(geneCounts)[idx]))
+# colnames(exonCounts)[idx] = gsub("-2$", "R", as.character(colnames(exonCounts)[idx]))
+
+# get Brig's metdata
+metadata = read.csv(getFileLocation(synGet( 'syn9908107' )), header=TRUE)
+metadata$Cell.Type = factor(gsub(' ', '_',metadata$Cell.Type), c('6_wk_FB_neuron', 'NPC'))
+# metadata = droplevels(metadata[-nrow(metadata),])
+metadata$Donor = factor(sapply(strsplit(as.character(metadata$Sample.Name), '-'), function(x) x[1]))
+metadata$Cell.Type_make.names = make.names(metadata$Cell.Type)
+metadata$Exclusion = as.character(metadata$Exclusion)
+# check that sample are present
+# which(! (colnames(geneCounts) %in% metadata$Sample.Name))
+
+# only keep samples present in data and metadata
+idx = match(colnames(geneCounts), metadata$Sample.Name)
+metadata = metadata[idx,]
+
+# add sendai reads
+sendaiReads = read.csv(getFileLocation(synGet( 'syn9908176' )), header=TRUE, stringsAsFactors=FALSE)
+sendaiReads$RNA_Sample_ID = gsub("-2$", "R",sendaiReads$RNA_Sample_ID)
+
+idx = match(metadata$Sample.Name, sendaiReads$RNA_Sample_ID)
+metadata$SendaiReads = sendaiReads$SendaiCounts[idx]
+
+# metadata$totalReads = colSums(geneCounts)
+# metadata$SendaiCPM = with(metadata, log2(SendaiReads / (totalReads/1e6)))
+# metadata$SendaiCPM_v2 = metadata$SendaiCPM
+# metadata$SendaiCPM_v2[!is.finite(metadata$SendaiCPM_v2) ] = -4
+
+# Sendai results
+metadata$totalReads = colSums(geneCounts)
+metadata$SendaiCPM = with(metadata, (SendaiReads) / (totalReads/1e6))
+
+# change mislabeling
+i = metadata$Sample.Name %in% c("499-X-CF", "499-X-CN")
+metadata$Donor = as.character(metadata$Donor)
+metadata$Donor[i] = "449"
+metadata$Sex[i] = "Female"
+metadata$Donor = factor(metadata$Donor)
+```
+
+```{r normalized.expression.CPM}
+genes = DGEList(counts=geneCounts[isexpr,])
+genes = calcNormFactors(genes)
+design = model.matrix(~Cell.Type + Sex, metadata)
+
+# get log2 CPM
+vobj = voom(genes, design, plot=FALSE )
+```
+
+# report p-value testing if genes in the CNV region in donor with that CNV has gene expression pattern that is sidnificantly different from other donors
+```{r analyze.CNV}
+info_CNV = read.csv(getFileLocation(synGet( 'syn8625641' )), header=TRUE, stringsAsFactors=FALSE)
+info_CNV$Chr_hg19 = sapply(strsplit(info_CNV$BED_hg19, ':'), function(x) x[1])
+location = sapply(strsplit(info_CNV$BED_hg19, ':'), function(x) x[2])
+info_CNV$Start_hg19 = sapply(strsplit(location, '-'), function(x) as.numeric(x[1]))
+info_CNV$End_hg19 = sapply(strsplit(location, '-'), function(x) as.numeric(x[2]))
+
+
+# Normalize expression data
+# For each gene, substract mean and divide by standard devation
+geneNorm = apply(vobj$E, 1, function(x){
+  (x - mean(x)) /sd(x)
+  })
+
+geneNorm = matrix(geneNorm, nrow=nrow(vobj), byrow=TRUE)
+rownames(geneNorm) = rownames(vobj)
+colnames(geneNorm) = colnames(vobj)
+
+plotCNV = function( Donor, CHROM, START, END, direction=NULL,windowSize=NULL ){
+
+  if( direction == "Del"){
+    direction = "Deletion"
+  }
+  if( direction == "Dup"){
+    direction = "Duplication"
+  }
+  if( is.null(direction) ){
+    direction = "CNV"
+  }
+
+  # keep only genes with a valid midpoint
+  geneInfoLocal = geneInfo[match(rownames(geneNorm), geneInfo$Geneid),]
+  geneNormLocal = geneNorm
+
+  geneInfoLocal$midpoint = with(geneInfoLocal, (geneEnd + geneStart) / 2)
+
+  # keep only gene from this chromosome
+  idxChr = which(geneInfoLocal$Chrom == CHROM)
+
+  # convert gene expression z-scores to data.frame for ggplot2
+  geneNormMelt = melt(geneNormLocal[idxChr,])
+  geneNormMelt$gene = geneInfoLocal$geneName[idxChr]
+  colnames(geneNormMelt) = c("window", "sample", "value", 'geneName')
+  geneNormMelt$window = geneInfoLocal$midpoint[idxChr][geneNormMelt$window]
+  geneNormMelt$color = "black"
+  i = geneNormMelt$sample %in% as.character(metadata$Sample.Name[as.character(metadata$Donor) == Donor])
+  geneNormMelt$color[i] = "red"
+
+  # expand window size
+  if( is.null(windowSize) ){
+    windowSize = 1e4
+    i = c()
+
+    while( sum(i, na.rm=TRUE) < 100){
+      i = (geneNormMelt$window > START - windowSize) & (geneNormMelt$window < END + windowSize)
+      windowSize = windowSize * 1.2
+    }
+
+    windowSize = max(windowSize, 1e6)
+  }
+
+  # get indeces in window
+  i = (geneNormMelt$window > START - windowSize) & (geneNormMelt$window < END + windowSize)
+
+  # define window
+  targetRange = GRanges(CHROM, IRanges(START - windowSize, END + windowSize))
+
+  # Ideogram
+  ##########
+
+  fig.Ideogram <- Ideogram(hg19IdeogramCyto, CHROM, zoom.region=c(START - windowSize, END + windowSize), alpha=0)
+
+  # fig.Ideogram = fig.Ideogram + xlim(targetRange)
+  # fixed(fig.Ideogram) = FALSE
+
+
+  data(hg19IdeogramCyto, package = "biovizBase")
+  fig.Ideogram = Ideogram(hg19IdeogramCyto, CHROM, zoom.region=c(START - windowSize, END + windowSize), alpha=0)
+
+  # Expression z-scores
+  #####################
+
+  data = geneNormMelt[which(i),]
+  data = data[order(data$color, decreasing=TRUE),]
+  data$color = factor(data$color, c( "red", "black"))
+
+  fig.Z = ggplot(data, aes(window, value, group=sample, color=color)) + geom_path() + theme_minimal() + 
+    theme(legend.position="none") + geom_hline(yintercept=0) + ylab('z-score') + aes(group=rev(sample)) 
+
+  if( sum(data$color == "red") > 0){
+    fig.Z = fig.Z + scale_color_manual(values=c('red', 'grey50'))
+  }else{
+    fig.Z = fig.Z + scale_color_manual(values=c('grey50'))
+  }
+
+  fig.Z = fig.Z + xlim(START - windowSize, END + windowSize)
+  fig.Z = fig.Z + geom_hline(yintercept=3, color="grey50", linetype = 2)
+  fig.Z = fig.Z + geom_hline(yintercept=-3, color="grey50", linetype = 2)
+
+  # if fewer than 10 points are to be labeled
+  if(sum(geneNormMelt$value[which(i)] < -3) < 10){
+    fig.Z = fig.Z + geom_text_repel(data=subset(geneNormMelt[i,], value < -3, color='grey50'), aes(window, value, label=sample), box.padding = unit(.9, 'lines'), segment.color = 'grey50')
+  }
+
+
+  if( length(with(data, value[color=='red'])) > 5){
+    res = wilcox.test(with(data, value[color=='black']), with(data, value[color=='red']))
+    cat("P-value:", res$p.value, '\n')
+  }
+
+  genesShown = unique(geneNormMelt$geneName[i])
+
+  # CNV
+  ######
+
+  fig.CNV = autoplot(targetRange, fill='firebrick', color="firebrick") + theme_minimal() + theme(axis.title.y = element_text(angle = 0, vjust = .5)) +  ylab(direction)
+
+  # Gene Models
+  #############
+
+  grf <- GRangesFilter(GRanges(gsub('^chr', '', CHROM), ranges = IRanges(START - windowSize, END + windowSize),
+        ), condition = "overlapping")
+
+  ## Query genes:
+  gn <- exons(txdb, columns = c('gene_biotype', 'exon_id', 'gene_id', 'gene_name'), filter = grf)
+
+  # get only genes that are in the expression object
+  idx = with(gn, (gene_name %in% genesShown) | gene_id %in% genesShown)
+  gnExpr = gn[idx,]
+  gnNot = gn[!idx,]
+
+  # filter and convert to GRangesList
+  geneListExpr = sapply(unique(gnExpr$gene_name), function(gene_name) gnExpr[gnExpr$gene_name == gene_name,])
+  geneListExpr = GRangesList(geneListExpr)
+
+  # filter and convert to GRangesList
+  geneListNot = sapply(unique(gnNot$gene_name), function(gene_name) gnNot[gnNot$gene_name == gene_name,])
+  geneListNot = GRangesList(geneListNot)
+
+  # make plots
+  fig.Tx_expr = ggplot(txdb) + geom_alignment(geneListExpr, names.expr='GENEID') + theme_minimal() +
+    scale_x_continuous(labels=function(x){paste(x/1e6, 'Mb')}) + theme(panel.grid.minor.y=element_blank(),
+    panel.grid.major.y=element_blank())
+
+  fig.Tx_not = ggplot(txdb) + geom_alignment(geneListNot, names.expr='GENEID') + theme_minimal() +
+    scale_x_continuous(labels=function(x){paste(x/1e6, 'Mb')}) + theme(panel.grid.minor.y=element_blank(),
+    panel.grid.major.y=element_blank())
+
+  # Combined plot
+  ###############
+
+  main = paste('Donor:', Donor)
+
+  fig.Ideogram = Ideogram(hg19IdeogramCyto, CHROM, zoom.region=c(START - windowSize, END + windowSize), alpha=0, aspect.ratio=1/30)
+  A = ggbio(fig.Ideogram)
+  fixed(A) = TRUE
+
+  objLst = list(A, 'Expression' = fig.Z, fig.CNV , 'Genes' = fig.Tx_expr)#, "Not\nexpressed" = fig.Tx_not)
+
+  fig = tracks( objLst,  heights = c(.1, 2, .1,.7), xlim=c(START - windowSize, END + windowSize), padding = unit(-1.1, "lines"), title=main, label.bg.fill="navy", label.text.color="white", label.width = unit(2, "lines"))
+
+  fig
+}
+
+# run plot for each CNv location
+figList = foreach(i = 1:nrow(info_CNV) ) %do% {
+  cat(info_CNV$Patient_ID[i], ":\n")
+  plotCNV( info_CNV$Patient_ID[i], info_CNV$Chr_hg19[i], info_CNV$Start_hg19[i], info_CNV$End_hg19[i], info_CNV$Direction[i])
+}
+
+ Donor = info_CNV$Patient_ID[i]
+ CHROM = info_CNV$Chr_hg19[i]
+ START = info_CNV$Start_hg19[i]
+ END = info_CNV$End_hg19[i]
+ direction = info_CNV$Direction[i]
+ windowSize=NULL
+
+```
+
+# plot CNV's
+```{r CNV.plot.show, fig.height=10, cache=FALSE}
+  #dsdd
+for(i in 1:length(figList)){
+  print(figList[[i]])
+}
+```
+
+
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
