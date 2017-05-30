@@ -133,8 +133,7 @@ design = model.matrix(~Cell.Type + Sex, metadata)
 # get log2 CPM
 vobj = voom(genes, design, plot=FALSE )
 ```
-
-# report p-value testing if genes in the CNV region in donor with that CNV has gene expression pattern that is sidnificantly different from other donors
+Report p-value testing if genes in the CNV region in donor with that CNV has gene expression pattern that is sidnificantly different from other donors.  Only report if there are > 5 genes in the region
 ```{r analyze.CNV}
 info_CNV = read.csv(getFileLocation(synGet( 'syn8625641' )), header=TRUE, stringsAsFactors=FALSE)
 info_CNV$Chr_hg19 = sapply(strsplit(info_CNV$BED_hg19, ':'), function(x) x[1])
