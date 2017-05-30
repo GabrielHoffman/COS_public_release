@@ -1,0 +1,1828 @@
+---
+title: "hiPSC models of Schizophrenia"
+subtitle: 'Public release of data and code from Hoffman, et al. (submitted)'
+author: "Developed by [Gabriel Hoffman](http://gabrielhoffman.github.io/)"
+date: "Run on `r Sys.Date()`"
+documentclass: article
+output: 
+  html_document:
+  toc: true
+---
+
+Data is available on Synapse.
+
+## Summary
+This includes code and plots for the final version of the paper.  Exploratory analysis and intermediate processing steps are too extensive to be included here
+
+
+<!--- 
+cd /home/ghoffman/data/COS/public_release
+rmarkdown::render("~/workspace/scripts/Brennand/COS/analysis_public_release.Rmd")
+# knitr::knit2html('~/workspace/scripts/Brennand/COS/analysis_public_release.Rmd') 
+User: Brennand_COS
+Password: ips_rnaseq 
+export OMP_NUM_THREADS=1
+export OMP_NUM_THREADS=32
+--->
+
+
+```{r initialize, cache=FALSE, echo=FALSE, message=FALSE, results='hide'}
+nthreads = 12
+```
+
+```{r load.always, cache=FALSE, echo=FALSE, message=FALSE, results='hide'}
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(synapseClient))
+
+cl <- makeCluster(12)
+registerDoParallel(cl)
+
+synapseLogin()
+
+usedByScript = list(list(name="differential_expression_plus.R", url="https://bitbucket.org/gabriel_hoffman/scripts/src/9ab22dec3911c130462d87f035a564295878db60/Brennand/COS/differential_expression_plus.R"))
+
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(variancePartition))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(ape))
+suppressPackageStartupMessages(library(mixtools))
+suppressPackageStartupMessages(library(latex2exp))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(preprocessCore))
+suppressPackageStartupMessages(library(colortools))
+suppressPackageStartupMessages(library(xtable))
+# suppressPackageStartupMessages(library(xlsx))
+suppressPackageStartupMessages(library(lmerTest))
+suppressPackageStartupMessages(library(reshape2))
+suppressPackageStartupMessages(library(qvalue))
+suppressPackageStartupMessages(library(knitr))
+# suppressPackageStartupMessages(library(knit2synapse))
+suppressPackageStartupMessages(library(GGally))
+suppressPackageStartupMessages(library(gage))
+suppressPackageStartupMessages(library(HTSanalyzeR))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(foreach))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(WGCNA))
+
+# allowWGCNAThreads(nthreads)
+
+options(xtable.type="html")
+
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=TRUE,
+  error = FALSE,
+  tidy = FALSE,
+  cache = TRUE,
+  dev = c("png", "pdf"), 
+  fig.width=7, fig.height=7)
+
+options(markdown.HTML.stylesheet = '/home/ghoffman/data/COS/public_release/custom.css')
+```
+
+
+```{r ESS_ranges_cost}
+# Define code for effective sample size calculations
+plot_Ne = function(N_total, w){
+
+  # total cost.  Equals total number of experiments when w 1
+  # N_total = 100
+
+  # given that the first experiment from a donor has cost 1,
+  # w is the cost of each successive experiment from that same donor
+  # w = .1
+
+  rho = seq(0, 1, length.out=100)
+  df = data.frame(m=c(), Ne=c(), rho=c())
+
+  m_array = c(1:4)
+  for(m in m_array){
+    k = N_total / (1 + (m-1)*w)
+
+    Ne  = (m*k) / (1+rho*(m-1))
+
+    df = rbind(df, data.frame(m=as.character(m), Ne, rho))
+  }
+
+  ggplot(df, aes(rho, Ne, colour=m)) + geom_line(size=2) + theme_bw() +xlab("Donor effect (%)") + ylab("Effective sample size") +
+    ggtitle(paste("Relative cost of second+ sample:", w)) + theme(plot.title=element_text(hjust=0.5))  + 
+    scale_colour_manual(values=c("#CD2626", "#7ACD26", "#26CDCD", "#7A26CD"), name = "replicates\nper donor")
+}
+
+# plot_Ne(100, 1) + ylim(0, 160)
+```
+
+```{r get.MSigDB, echo=FALSE, results="hide"}
+# define gene set enrichment analysis code
+enrich_mSigDB = function( geneScoreEntrez, mSigDB, cutoff, minGeneSetSize=20){
+
+  res = foreach( key=names(mSigDB), .packages=c("HTSanalyzeR") ) %dopar% {
+
+    res = multiHyperGeoTest( collectionOfGeneSets=mSigDB[[key]], universe=names(geneScoreEntrez), hits=names(geneScoreEntrez)[geneScoreEntrez <= cutoff], minGeneSetSize=minGeneSetSize, verbose=FALSE)
+
+    res = data.frame(res, stringsAsFactors=FALSE, check.names=FALSE)
+
+    res$Class = rep(key, nrow(res))
+    res[["Gene Set"]] = rownames(res)
+    rownames(res) = c()
+    res[["OR"]] = res[["Observed Hits"]] / res[["Expected Hits"]]
+    res
+  }
+
+  res2 = c()
+  for( i in 1:length(res)){
+    res2 = rbind(res2, res[[i]])
+  }
+
+  res3 = data.frame(res2[,c("Class", "Gene Set", "Gene Set Size", "Expected Hits", "Observed Hits", "OR", "Pvalue")], stringsAsFactors=FALSE, check.names=FALSE)
+  
+  res3 = res3[order(res3$Pvalue),]
+
+  return( res3 )
+}
+
+
+read.mSigDB = function(files, standard=TRUE){
+
+    mSigDB = list()
+
+    for( file in files){
+
+      if( standard ){
+          key = substring(basename(file), 1,2)
+        }else{
+          key = sapply(strsplit(basename(file), "\\."), function(x) x[1])
+        }
+
+        mSigDB[[key]] = readList( file )
+    }
+    return(mSigDB)
+}
+
+formTable = function(x,digits, stop=40){
+  if(missing(digits)){
+    digits = rep(2, ncol(x))
+  }
+  if( length(digits) != ncol(x)){
+    stop("Lengths don't match")
+  }
+  x = data.frame(x)
+  ret = sapply(1:ncol(x), function(i){
+    format(x[,i,drop=FALSE],digits=digits[i])})
+  ret = do.call("cbind", ret)
+  rownames(ret) = rownames(x)
+  ret[,1] = substring(ret[,1], 1, stop)
+  rownames(ret) = substring(rownames(ret), 1, stop)
+  ret
+}
+
+
+plot_within_btw = function( simMat, design, col=c("lightblue", "lightgreen"),main='',ylim=NULL,...){
+
+  variation = list(type=c(), value=c(), donor1=c(), donor2=c())
+  for(i in 1:ncol(design)){
+    idx1 = which(design[,i] == 1)   
+    idx0 = which(design[,i] == 0)
+    C_sub = simMat[idx1, idx1]
+
+    variation$type = append( variation$type, rep("Same Donor", sum(lower.tri(C_sub))) )  
+    variation$value = append( variation$value, C_sub[lower.tri(C_sub)])   
+    variation$donor1 = append(variation$donor1, rep(colnames(design)[i], length(C_sub[lower.tri(C_sub)]) ))      
+    variation$donor2 = append(variation$donor2, rep(colnames(design)[i], length(C_sub[lower.tri(C_sub)]) ))
+
+    variation$type = append( variation$type, rep("Different Donor", length(simMat[idx1,idx0])) )  
+    variation$value = append( variation$value, simMat[idx1,idx0])    
+    variation$donor1 = append(variation$donor1, rep("", length(simMat[idx1,idx0])) )      
+    variation$donor2 = append(variation$donor2, rep("", length(simMat[idx1,idx0])))
+  }
+  variation = as.data.frame(variation)
+
+  fig = ggplot( variation, aes(type, value)) + geom_violin(scale = "width", aes(fill=type)) + 
+    ylab("Variance explained (%)") + xlab("") + geom_boxplot(width = 0.07, 
+        fill = "grey", outlier.color = "black") + theme_bw(15) + 
+        scale_fill_manual(values = col) + theme(legend.position = "none") + 
+        ylab("Correlation between samples") + scale_fill_manual(values=c("grey", "steelblue1"))
+
+    if( main !='' ){
+      fig = fig + ggtitle( main )
+    }
+    if( !is.null(ylim) ){
+      fig = fig + ylim( ylim )
+    }
+
+    fig = fig + theme(aspect.ratio=1)
+
+    return(list(fig=fig, variation=variation))
+}
+
+
+# get files based on parent
+geneset.files = synQuery('select * from file where parentId == "syn8390535"')
+
+# Download files
+files = sapply( geneset.files$file.id, function(file) synGet(file)@filePath)
+
+geneSets = read.mSigDB(files, standard=FALSE )
+
+geneSetsCombined_MSigDB = unlist( geneSets, recursive=FALSE)
+
+i = grep("^c3", names(geneSetsCombined_MSigDB), invert=TRUE)
+geneSetsCombined_MSigDB = geneSetsCombined_MSigDB[i]
+i = grep("^c1", names(geneSetsCombined_MSigDB), invert=TRUE)
+geneSetsCombined_MSigDB = geneSetsCombined_MSigDB[i]
+
+# read magna genesets
+geneset.files = synQuery('select * from file where parentId == "syn8390957"')
+
+# Download files
+files = sapply( geneset.files$file.id, function(file) synGet(file)@filePath)
+
+geneSetsMagma = unlist(read.mSigDB(files, standard=FALSE), recursive=FALSE)
+names(geneSetsMagma) = gsub("magma_gene_sets.", "", names(geneSetsMagma))
+
+
+geneSetsCombined = c(geneSetsCombined_MSigDB, geneSetsMagma)
+
+# remove small genesets
+geneSetsCombined = geneSetsCombined[sapply(geneSetsCombined, length) > 20]
+geneSetsCombined = geneSetsCombined[sapply(geneSetsCombined, length) < 5000]
+# length(geneSetsCombined)
+```
+
+
+```{r load.data}
+# get gene counts and expression cutoff
+geneCounts = as.matrix(read.csv(getFileLocation(synGet( 'syn6613770' )), header=TRUE, row.names=1, check.names=FALSE))
+# exonCounts = as.matrix(read.csv(getFileLocation(synGet( 'syn7113739' )), header=TRUE, row.names=1, check.names=FALSE))
+isexpr = read.csv(getFileLocation(synGet( 'syn6613776' )), row.names=1, header=FALSE)[,1]
+# isexpr_exon = read.csv(getFileLocation(synGet( 'syn7113733' )), row.names=1, header=FALSE)[,1]
+
+# get gene annotations
+geneInfo = read.csv(getFileLocation(synGet( 'syn7113731' )), header=TRUE, stringsAsFactors=FALSE)
+
+# get my metadata
+info = read.csv(getFileLocation(synGet( 'syn6185540' )), header=TRUE)
+info$Donor = factor(info$Donor)
+idx = grep("(N|F)$", info$ID, invert=TRUE)
+info$ID[idx] = gsub("-2$", "", as.character(info$ID[idx]))
+colnames(geneCounts)[idx] = gsub("-2$", "R", as.character(colnames(geneCounts)[idx]))
+# colnames(exonCounts)[idx] = gsub("-2$", "R", as.character(colnames(exonCounts)[idx]))
+
+# get Brig's metdata
+metadata = read.csv(getFileLocation(synGet( 'syn6176117' )), header=TRUE)
+metadata$Cell.Type = factor(gsub(' ', '_',metadata$Cell.Type), c('6_wk_FB_neuron', 'NPC'))
+# metadata = droplevels(metadata[-nrow(metadata),])
+metadata$Donor = factor(sapply(strsplit(as.character(metadata$Sample.Name), '-'), function(x) x[1]))
+metadata$Cell.Type_make.names = make.names(metadata$Cell.Type)
+metadata$Exclusion = as.character(metadata$Exclusion)
+# check that sample are present
+# which(! (colnames(geneCounts) %in% metadata$Sample.Name))
+
+# only keep samples present in data and metadata
+idx = match(colnames(geneCounts), metadata$Sample.Name)
+metadata = metadata[idx,]
+
+# add sendai reads
+sendaiReads = read.csv(getFileLocation(synGet( 'syn7114032' )), header=TRUE, stringsAsFactors=FALSE)
+sendaiReads$RNA_Sample_ID = gsub("-2$", "R",sendaiReads$RNA_Sample_ID)
+
+idx = match(metadata$Sample.Name, sendaiReads$RNA_Sample_ID)
+metadata$SendaiReads = sendaiReads$SendaiCounts[idx]
+
+# metadata$totalReads = colSums(geneCounts)
+# metadata$SendaiCPM = with(metadata, log2(SendaiReads / (totalReads/1e6)))
+# metadata$SendaiCPM_v2 = metadata$SendaiCPM
+# metadata$SendaiCPM_v2[!is.finite(metadata$SendaiCPM_v2) ] = -4
+
+# Sendai results
+metadata$totalReads = colSums(geneCounts)
+metadata$SendaiCPM = with(metadata, (SendaiReads) / (totalReads/1e6))
+
+# change mislabeling
+i = metadata$Sample.Name %in% c("499-X-CF", "499-X-CN")
+metadata$Donor = as.character(metadata$Donor)
+metadata$Donor[i] = "449"
+metadata$Sex[i] = "Female"
+metadata$Donor = factor(metadata$Donor)
+```
+
+# Sendai Expression
+```{r Figure_Sendai_expression, fig.width=4, fig.height=8}
+# metadata_sendai = read.csv(getFileLocation(synGet( 'syn8611033' )), header=TRUE)
+
+i = order(metadata$SendaiCPM)
+ggplot(metadata[i,], aes(reorder(Sample.Name, SendaiCPM), SendaiCPM)) + 
+  theme_bw(8) + coord_flip() + geom_point() + xlab('') + ylab(expression("Sendai Expression" ~ (CPM))) +
+  scale_y_log10() + theme(legend.position="none") 
+```
+
+# Biotype of expressed genes
+```{r biotype.counts}
+isexpr = read.csv(getFileLocation(synGet( 'syn6613776' )), row.names=1, header=FALSE)[,1]
+geneInfo = read.csv(getFileLocation(synGet( 'syn7113731' )), header=TRUE, stringsAsFactors=FALSE)
+
+biotype.counts = sort(table(geneInfo$transcript_biotype[isexpr]), decreasing=TRUE)
+df = data.frame(biotype.counts)
+colnames(df) = c("Biotype", 'Count')
+
+kable( df )
+
+# file = "~/Downloads/Biotype_counts.csv"
+# write.csv(df, file=file, row.names=FALSE)
+```
+
+# Check sex on 94 samples
+```{r sexcheck.initial}
+genes = DGEList(counts=geneCounts[isexpr,])
+genes = calcNormFactors(genes)
+
+geneExpr = rpkm( genes, geneInfo$Length[isexpr], log=FALSE )
+
+ensGenes_XIST = with(geneInfo, Geneid[hgnc_symbol %in% c("XIST")])
+
+genes_on_chrY = c( "USP9Y", "UTY", "NLGN4Y", 'ZFY', 'RPS4Y1', 'TXLNG2P')
+ensGenes_chrY = with(geneInfo, Geneid[hgnc_symbol %in% genes_on_chrY])
+
+data = data.frame( XIST = log2(geneExpr[ensGenes_XIST,]), genesY = log2(colSums(geneExpr[ensGenes_chrY,,drop=FALSE])),
+   Sex = metadata$Sex, ID = metadata$Sample.Name)
+data$Sex = as.character(data$Sex)
+
+i = with(data, (XIST <  0 & genesY < 5) | (XIST > 2 & genesY > 4))
+data$Sex[i] = "Female - problem"
+data$Sex = factor(data$Sex, c("Male", "Female", "Female - problem" ))
+
+ggplot(data, aes(XIST, genesY)) + geom_point(aes(colour=Sex)) + theme_bw(15) + 
+    scale_colour_manual(values=c("blue", "red", "grey")) + theme(aspect.ratio=1) + 
+    xlab(expression("XIST" ~ (log[2] ~ RPKM))) + ylab(expression("Sum of 6 chrY genes" ~ (log[2] ~ RPKM))) +
+    geom_text_repel(data=data[i,], aes(XIST, genesY, label=ID))
+
+kable(data.frame(genes_on_chrY))
+```
+
+# Detect sample contamination with VerifyBamID
+The labeling of Donor 499 was corrected manually
+```{r verifyBAMID, echo=FALSE, message=FALSE}
+# VerifyBAMID run on RNA-seq data using WES or PsychChip as reference for allele frequencies
+verifyBAM_WES = read.table(getFileLocation(synGet( 'syn7113786' )), header=TRUE, stringsAsFactors=FALSE, comment.char='')
+verifyBAM_psychChip = read.table(getFileLocation(synGet( 'syn7113788' )), header=TRUE, stringsAsFactors=FALSE, comment.char='')
+verifyBAM_RNA = read.csv(getFileLocation(synGet( 'syn7114023' )), header=TRUE, stringsAsFactors=FALSE, comment.char='')
+
+data = melt(verifyBAM_RNA)
+data$variable = as.character(data$variable)
+data = data[-grep("FREEMIX", data$variable),]
+
+data$variable[data$variable == 'CHIPMIX_PsychChip'] = "PsychChip"
+data$variable[data$variable == 'CHIPMIX_WES'] = "Whole Exome Sequencing"
+data$variable = factor(data$variable)
+
+data$x = as.numeric(data$variable) + runif(nrow(data), -.2, .2)
+
+ggplot(data, aes(variable, value) ) + geom_blank() + geom_point(aes(x, value)) + theme_bw(15) + ylab("Estimated % Contamination") + xlab("") + geom_text_repel(data=subset(data,value > .1), aes(x, value, label=RNA_Sample_ID), box.padding = unit(.4, 'lines')) +
+  theme(axis.text.x=element_text(angle=30, hjust=1), aspect.ratio=1)
+```
+
+
+```{r exclude.samples, echo=FALSE, message=FALSE}
+# More exclusions
+# excludeBasedOnSexGenes = c('1275-B-3F', '1275-C-1N', '2011-3-12N', '2476-1-4F', '2476-1-4N', '2476-D4-4F', 
+  # '2484-2aF', '2484-2aN', '3113-3-21F', '3113-3-21N', '3121-2-1F', '3121-2-1N', 
+  # '3121-2-MSSM2F', '3121-2-MSSM2N', '3183-1-4F')
+
+excludeBasedOnSexGenes = c("1275-B-3F", "1275-B-3N", "1275-C-1F", "1275-C-1N", "2476-1-4F", "2476-1-4N", "2484-2aF", "2484-2aN", "3113-3-21F", "3113-3-21N", "3121-2-1F", "3121-2-1N", "3121-2-MSSM2F", "3121-2-MSSM2N", "676-1-2N")
+
+metadata$Exclusion[metadata$Sample.Name %in% excludeBasedOnSexGenes] = 'yes' #"maybe"
+
+# apply exclusion
+idx_exclude = which(metadata$Exclusion == "yes")
+```
+
+
+## Excluded due to sample mislabeling, contamination or issues with expression on the sex chromosomes
+```{r write.exclude, results="asis"}
+print(xtable(metadata[idx_exclude,1,drop=FALSE]), include.rownames=FALSE)     
+```
+
+```{r resume.processing}
+metadata = metadata[-idx_exclude,]   
+geneCounts = geneCounts[,-idx_exclude]
+# exonCounts = exonCounts[,-idx_exclude]  
+metadata$color = rainbow(nlevels(metadata$Donor))[metadata$Donor]
+
+# check if geneCounts and metadata are sorted correctly
+# table(colnames(geneCounts) == as.character(metadata$Sample.Name))
+```
+
+#### Samples included in analysis
+```{r dataset.info, results="asis"}
+print(xtable(xtabs(~ Dx + Cell.Type, metadata)))
+```
+
+
+```{r cache=FALSE}
+suppressPackageStartupMessages(library(EnsDb.Hsapiens.v70))
+suppressPackageStartupMessages(library(ggbio))
+txdb = EnsDb.Hsapiens.v70
+data(hg19IdeogramCyto, package = "biovizBase")
+```
+
+
+# QC metrics
+```{r SI_Fig_1}
+qc_metrics = read.csv(getFileLocation(synGet( 'syn8610847' )), header=TRUE, stringsAsFactors=FALSE)
+
+hist(qc_metrics$rRNA.rate, xlab="rRNA rate", main='rRNA rate')
+```
+
+
+
+```{r voom}
+genes = DGEList(counts=geneCounts[isexpr,])
+genes = calcNormFactors(genes)
+design = model.matrix(~Cell.Type + Sex, metadata)
+
+# voom / dupcor 1
+#################
+
+vobj_init = voom(genes, design, plot=TRUE )
+
+dupcor_init = duplicateCorrelation( vobj_init, design, block=metadata$Donor)
+dupcor_init$consensus
+
+# # voom / dupcor 2
+# #################
+# # re-estimate weights using correlation values
+
+# dupcor = list(consensus = 0.56)
+# dupcor_init = list(consensus = 0.56)
+vobj <- voom(genes, design, block = metadata$Donor, correlation=dupcor_init$consensus)
+
+dupcor = duplicateCorrelation( vobj, design, block=metadata$Donor)
+dupcor$consensus
+```
+
+```{r temp}
+# dupcor = list(consensus = 0.05)
+```
+
+
+# Check sex on cleaned dataset
+```{r sexcheck}
+ensGenes_XIST = with(geneInfo, Geneid[hgnc_symbol %in% c("XIST")])
+ensGenes_UTY = with(geneInfo, Geneid[hgnc_symbol %in% c( "UTY")])
+
+data = data.frame( XIST = vobj$E[ensGenes_XIST,], UTY = vobj$E[ensGenes_UTY,], Sex = metadata$Sex, ID = metadata$Sample.Name)
+
+fig = ggplot(data, aes(XIST, UTY)) + geom_point(aes(colour=Sex)) + theme_bw(15) + scale_colour_manual(values=c("red", "blue")) +
+  theme(legend.position="none", aspect.ratio=1) + xlab(expression("XIST" ~ (log[2] ~ CPM))) + ylab(expression("UTY" ~ (log[2] ~ CPM)))
+
+fig + geom_text_repel(data=subset(data,Sex=='Female' & (XIST < 8 | UTY > -1)), aes(XIST, UTY, label=ID))
+```
+
+
+```{r DESeq2.initialize}
+dds <- DESeqDataSetFromMatrix(countData = geneCounts[isexpr,],
+  colData = metadata,
+  design = ~Cell.Type + Sex)
+
+dds <- DESeq(dds)
+
+plotDispEsts(dds)
+
+geneExpr_vst <- assay(vst(dds, blind=FALSE))
+
+```
+
+
+
+## Cibersort results
+# Perform deconvolution using single cell RNA-seq from mouse
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE67310
+
+http://www.nature.com/nature/journal/v534/n7607/full/nature18323.html
+
+https://web.stanford.edu/group/barres_lab/brain_rnaseq.html
+
+http://www.jneurosci.org/content/34/36/11929.short
+
+```{r cibersort}
+cibersort = read.table(getFileLocation(synGet( 'syn8255746' )), row.names=1, header=TRUE)
+rownames(cibersort) = gsub("-2$", "R", rownames(cibersort))
+
+# missing samples
+#  metadata$Sample.Name[!metadata$Sample.Name %in% rownames(cibersort)]
+
+metadata2 = merge(metadata, cibersort, by.x='Sample.Name', by.y='row.names')
+rownames(metadata2) = metadata2$Sample.Name
+```
+
+
+
+# Original data
+```{r PCA.original}
+dcmpOriginal = prcomp( t(geneExpr_vst) )
+
+# clustering
+sampleDists <- dist( t( geneExpr_vst ) )
+sampleDistMatrix <- as.matrix( sampleDists )
+
+hcl = hclust( sampleDists )
+
+col = c("orange", "green2")
+df = data.frame(dcmpOriginal$x, metadata2)
+
+frac = dcmpOriginal$sdev^2 / sum(dcmpOriginal$sdev^2)   
+xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+
+ggplot(df, aes(PC1, PC2, color=Cell.Type)) + geom_point() + theme_bw(15) + xlab(xlab) + ylab(ylab) + 
+  scale_color_manual(values=col) + theme(aspect.ratio=1)
+
+```
+
+```{r hclust.original, echo=FALSE, message=FALSE}
+plot(as.phylo(hcl), type="fan", tip.color=rainbow(nlevels(metadata2$Donor))[metadata2$Donor], cex=.8)
+```
+
+
+```{r within_between.original, echo=FALSE, message=FALSE}   
+simList = list()
+y_range = c()
+for( cellType in rev(levels( metadata2$Cell.Type)) ){
+
+  idx = (metadata2$Cell.Type == cellType) & ( metadata2$Exclusion != "maybe")
+
+  C = cor( geneExpr_vst, method="pearson"  )
+
+  simList[[cellType]] = plot_within_btw( C[idx,idx], model.matrix(~ Donor-1, metadata2[idx,]), main=cellType) 
+  y_range = c(y_range, min(C[idx,idx]))
+}
+
+do.call("grid.arrange", c(lapply(simList, function(x){
+
+  pv = with(x$variation, wilcox.test(value[type == "Same Donor"], value[type == "Different Donor"], alternative="greater"))
+
+  x$fig + theme(plot.title=element_text(hjust=0.5)) + ylim(min(y_range), 1)  + annotate("text", 2, .997, label=paste0("p < ", format(pv$p.value, digits=3)), size=6)
+  }   
+  ), ncol=2))
+```
+
+```{r compute.residuals}
+
+metadata2$Myocyte_Neuron = with(metadata2, Myocyte*(gsub(" ", "_",Cell.Type)=="6_wk_FB_neuron"))
+metadata2$Astrocytes_Neuron = with(metadata2, Astrocytes*(gsub(" ", "_",Cell.Type)=="6_wk_FB_neuron"))
+metadata2$Neuron_Neuron = with(metadata2, Neuron*(gsub(" ", "_",Cell.Type)=="6_wk_FB_neuron"))
+metadata2$MEF_Neuron = with(metadata2, MEF*(gsub(" ", "_",Cell.Type)=="6_wk_FB_neuron"))
+metadata2$Fibroblast_Neuron = with(metadata2, Fibroblast*(gsub(" ", "_",Cell.Type)=="6_wk_FB_neuron"))
+
+registerDoParallel(12)
+# form = ~ 0 + Cell.Type + Neuron:Cell.Type + Fibroblast_Neuron 
+form = ~ 0 + Cell.Type + Neuron:Cell.Type + Myocyte_Neuron + Astrocytes_Neuron + Sex
+
+fitList = fitVarPartModel( vobj, form, metadata2, fxn=function(fit){
+  residuals(fit) + t(model.matrix(~ 0 + fit$model$Cell.Type) %*% coef(fit)[1:2])
+  } )
+
+exprResiduals = do.call(rbind, fitList)
+colnames(exprResiduals) = metadata2$Sample.Name
+
+# PCA
+dcmpResiduals = prcomp( t(exprResiduals) )
+
+# clustering
+sampleDists <- dist( t( exprResiduals ) )
+sampleDistMatrix <- as.matrix( sampleDists )
+
+hcl = hclust( sampleDists )
+```
+
+
+# Analysis on residuals
+```{r PCA.residuals, cache=FALSE}
+frac = dcmpResiduals$sdev^2 / sum(dcmpResiduals$sdev^2)   
+xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+
+df = data.frame(dcmpResiduals$x[,1:2], name=rownames(dcmpResiduals$x), cellType = metadata$Cell.Type)
+
+ggplot(df, aes(PC1, PC2, color=cellType)) + geom_point() + theme_bw(15) + xlab(xlab) + ylab(ylab) + 
+  scale_color_manual(values=col) + theme(aspect.ratio=1)
+```
+
+```{r hclust.residuals, cache=FALSE}
+plot(as.phylo(hcl), type="fan", tip.color=rainbow(nlevels(metadata$Donor))[metadata$Donor], cex=.8)
+```
+
+```{r within_between.residuals, echo=FALSE, message=FALSE, cache=FALSE}     
+simList = list()
+y_range = c()
+for( cellType in rev(levels( metadata2$Cell.Type)) ){
+
+  idx = (metadata2$Cell.Type == cellType) & ( metadata2$Exclusion != "maybe")
+
+  C = cor( exprResiduals, method="pearson"  )
+  # C = cor( vobj$E, method="pearson" )
+
+  simList[[cellType]] = plot_within_btw( C[idx,idx], model.matrix(~ Donor-1, metadata2[idx,]), main=cellType) 
+  y_range = c(y_range, min(C[idx,idx]))
+}
+
+do.call("grid.arrange", c(lapply(simList, function(x){
+
+  pv = with(x$variation, wilcox.test(value[type == "Same Donor"], value[type == "Different Donor"], alternative="greater"))
+
+  x$fig + theme(plot.title=element_text(hjust=0.5)) + ylim(min(y_range), 1)  + annotate("text", 2, .997, label=paste0("p < ", format(pv$p.value, digits=3)), size=6)
+  }   
+  ), ncol=2))
+
+```
+
+
+# Correlation between covariates
+```{r cor.btw.covariates_v1}
+# Correlation between covariates
+keys = c('RIN','IQ','Sendai.Batch..','hiPSC date','hiPSC technician','hIPSC site','NPC generation batch','NPC thaw', "SendaiCPM")
+form = paste("~", paste(paste0('`',gsub(" ", "\\.", keys),'`'), collapse=" + "))
+C = canCorPairs( as.formula(form), metadata)
+
+plotCorrMatrix( C, main="Correlation between covariates" )
+```
+
+
+
+```{r variancePartition}
+form = ~ (1|Donor) + (1| Dx) + (1|Sex) + (1|Cell.Type) + Neuron + Fibroblast # +  Myocyte + Astrocytes + Neuron
+vpCellFrac2 = fitExtractVarPartModel(vobj, form, metadata2)
+```
+
+# all cell fractions
+```{r varPart.cell_fractions}
+figVp = plotVarPart(sortCols(vpCellFrac2)) + theme(aspect.ratio=1/2.5)   
+figVp
+```
+
+
+
+# Percent bars
+```{r Supplement.vpAllbar, fig.height=8, fig.width=15}
+genes = c( "SNX19", 'FURIN', 'TSNARE1', 'CNTN4', 'CLCN3', 'SNAP91', 'FZD6', 'SLITRK2', 'PPP1R12B', "BCAN", 'MYCBP2', 'SMARCE1', "UTY", 'STEAP3')
+
+idx = match(genes, geneInfo$hgnc_symbol)
+
+vpHGNC = sortCols(vpCellFrac2)[geneInfo$Geneid[idx],] 
+rownames(vpHGNC) = geneInfo$hgnc_symbol[idx]
+
+figPercent = plotPercentBars( vpHGNC ) + theme(aspect.ratio=1) + theme(legend.position="left")
+
+
+
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+
+leg = g_legend(figPercent)
+
+ylab = bquote(Expression~(log[2]~CPM))
+
+geneName = 'CNTN4'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+figStratify_CNTN4 = plotStratify( expr ~ Donor, GE, colorBy=NULL, ylab=ylab, main=geneName) + theme(aspect.ratio=1)
+
+geneName = 'FZD6'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+figStratify_FZD6 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2)) + scale_fill_manual(values=setColors("deepskyblue2", 2))
+
+geneName = 'SLITRK2'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+figStratify_SLITRK2 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2)) + scale_fill_manual(values=setColors("deepskyblue2", 2))
+
+geneName = 'MYCBP2'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+
+figStratify_MYCBP2 = ggplot(GE, aes(Neuron, expr)) + geom_point() + theme_bw(14) + theme(aspect.ratio=1, plot.title=element_text(hjust=0.5)) + 
+  xlab("Neuron composition score") + ylab(ylab) + ggtitle(geneName) +  geom_smooth(method='lm', se=FALSE) 
+
+geneName = 'SMARCE1'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+figStratify_SMARCE1 = plotStratify( expr ~ Cell.Type, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("orange", "green2")) + scale_color_manual(values=c("orange", "green2")) 
+
+geneName = 'STEAP3'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+figStratify_STEAP3 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, colorBy=NULL) + theme(aspect.ratio=1) 
+```
+
+```{r Fig.variancePartition, fig.width=12}
+     
+layout = matrix(c(1,2,2,2,3,4,5,6), ncol = 4, byrow = TRUE)   
+ fig = figPercent + theme(legend.position="none")
+grid.arrange(fig, figVp, figStratify_CNTN4, figStratify_FZD6, figStratify_SLITRK2, figStratify_MYCBP2, layout_matrix = layout, heights=c(1,1), padding = unit(0.05, "line"))      
+```
+
+```{r Fig.variancePartition1, fig.width=6}     
+grid.arrange(figStratify_SMARCE1, figStratify_STEAP3, heights=c(1), padding = unit(0.05, "line"))      
+```
+
+
+
+
+
+
+
+# Supplement: include technical variables 
+```{r Supplement.vpAll}
+formAll = ~ (1|Donor) + (1| Dx) + (1|Sex) + (1|Cell.Type) + Myocyte + Astrocytes + Neuron + RIN + IQ + (1|Sendai.Batch..) + (1|`hiPSC.date`) + (1|`hiPSC.technician`) + (1|`hIPSC.site`) + (1|`NPC.generation.batch`) + (1|`NPC.thaw`)
+
+vpAll = fitExtractVarPartModel( vobj, formAll, metadata2, colinearityCutoff=.9999)
+```
+
+```{r Supplement.plot.vpAll}
+vpLocal = vpAll
+colnames(vpLocal) = gsub("\\.", " ", colnames(vpLocal))
+plotVarPart( sortCols(vpLocal), label.angle=40 ) + theme(aspect.ratio=1/2)
+```
+
+# Correlation between variables
+```{r Supplement.can.cor.all}
+form = ~ Donor + Dx + Sex + Cell.Type + RIN + IQ + Sendai.Batch.. + hiPSC.date + hiPSC.technician + hIPSC.site + NPC.generation.batch + NPC.thaw + Myocyte + Astrocytes + Neuron
+
+C = canCorPairs( form, metadata2)
+plotCorrMatrix( C )
+```
+
+
+# Cell type composition: all samples
+```{r cibersort.plotPercentBars, fig.height=20, fig.width=10}
+df = cibersort
+ plotPercentBars(df) + ylab("Cell composition score")
+```
+
+# Histogram of cell type composition: all samples
+```{r cibersort.boxplot}
+ggplot(melt(df*100), aes(reorder(variable, value, median), value, fill=variable)) + geom_boxplot() + theme_bw(15) + 
+  theme(legend.position="none") + ylab("Cell composition score") + xlab("") + coord_flip()
+```
+
+
+# Cell composition is a balance between Neurons vs hiPSC and Fibroblasts
+```{r cibersort.cor_btw_celltypes}
+# fig = ggplot(metadata2, aes( Neuron * 100, hiPSC* 100 + Fibroblast* 100)) + geom_smooth(method=lm, se=FALSE, color="black") + geom_point(aes(colour=Cell.Type)) + theme_bw(15) + xlab("% Neuron") + ylab("% hiPSC + Fibroblast") +
+#   scale_colour_manual(values=c("orange", "green2")) + theme(legend.position="none")
+
+# r_cor = with(metadata2, cor(Neuron, hiPSC + Fibroblast, use='pairwise.complete.obs'))
+# r_cor = format(r_cor, digits=2)
+
+# fig + annotate("text", x = 30, y = 70, label = paste('R =', format(r_cor, digits=2)),size=6)
+```
+
+
+```{r cibersort.stratify, fig.width=21, fig.height=28}
+
+# idx = !colnames(cibersort) %in% c('Myelinating_Oligodendrocytes', 'Microglia')
+# idx2 = colnames(metadata2) %in% colnames(cibersort)[idx]
+
+figList = list()
+for( cell in colnames(cibersort)[order(tolower(colnames(cibersort)), decreasing=FALSE)] ){
+
+  fit = wilcox.test( metadata2[[cell]][metadata2$Cell.Type == levels(metadata2$Cell.Type)[1]],
+                     metadata2[[cell]][metadata2$Cell.Type == levels(metadata2$Cell.Type)[2]])
+
+  fig = plotStratifyBy( metadata2, 'Cell.Type', cell, sort=FALSE, legend=FALSE, main=cell, xlab="Cell type", ylab="Composition score", text=paste("p =", format(fit$p.value, digits=2))) + scale_fill_manual(values=c("orange", "green2")) + scale_colour_manual(values=c("orange", "green2")) + ylim(0, max(metadata2[[cell]])) + theme(aspect.ratio=1)
+
+  figList[[cell]] = fig + theme_bw(15) + theme(legend.position="none") + theme(plot.title=element_text(hjust=0.5))
+}
+
+do.call("grid.arrange", figList)
+```
+
+```{r cibersort.stratify2, fig.height=14}
+# grid.arrange(figList[['hiPSC']], figList[['Neuron']], ncol=1)   
+```
+
+```{r cibersort.tileplot}
+# idx = !colnames(cibersort) %in% c('Myelinating_Oligodendrocytes', 'Microglia')
+# idx2 = colnames(metadata2) %in% colnames(cibersort)[idx]
+
+# df = data.frame(matrix(NA,sum(idx2), 2))
+# colnames(df) = levels(metadata2$Cell.Type)
+# rownames(df) = colnames(metadata2)[idx2]
+
+# for(cellType in colnames(df)){
+#   for(frac in rownames(df)){
+#     i = metadata2$Cell.Type == cellType
+#     df[frac, cellType] = mean(metadata2[i,frac])
+#   }
+# }
+
+# df$fraction = rownames(df)
+# a = melt(df)
+# ggplot(a, aes(variable, fraction, fill=value) ) + geom_tile() + theme_bw()
+
+# vpFrac = fitExtractVarPartModel( t(metadata2[,idx2]), ~ Cell.Type, metadata2)
+
+# df = data.frame(Fraction = rownames(vpFrac), Cell.Type = vpFrac$Cell.Type )
+# df = df[order(df$Cell.Type),]
+# df$Fraction = factor(df$Fraction, df$Fraction)
+
+# ggplot(df, aes(Fraction, Cell.Type) ) + geom_bar(stat = "identity") + theme_bw() + coord_flip()
+```
+
+
+
+# variancePartition 
+## All variables
+```{r vpAll, fig.height=8, fig.width=15}
+formAll = ~ (1|Donor) + (1|Dx) + (1|Sex) + (1|Cell.Type) + RIN + IQ + (1|Sendai.Batch..) + (1|`hiPSC.date`) + (1|`hiPSC.technician`) + (1|`hIPSC.site`) + (1|`NPC.generation.batch`) + (1|`NPC.thaw`)
+
+vpAll = fitExtractVarPartModel( vobj, formAll, metadata, colinearityCutoff=.9999)
+```
+
+```{r plot.vpAll}
+plotVarPart( sortCols(vpAll) )
+```
+
+```{r can.cor.all}
+form = ~ Donor + Dx + Sex + Cell.Type + RIN + IQ + Sendai.Batch.. + hiPSC.date + hiPSC.technician + hIPSC.site + NPC.generation.batch + NPC.thaw
+
+C = canCorPairs( form, metadata)
+plotCorrMatrix( C )
+```
+
+
+
+
+# after correcting for CTC
+
+# limma - Differential expression - combined.  Neuron as covariate
+```{r differential.expression_Cell.fraction}
+
+form = ~ Dx + Cell.Type + Neuron:Cell.Type + Myocyte_Neuron + Astrocytes_Neuron + Sex
+
+# this give higher concordance with CMC
+form = ~ Dx + Cell.Type + Sex + MEF + Fibroblast
+
+design = model.matrix( form, metadata2)
+fit = lmFit( vobj, design, block=metadata2$Donor, correlation=dupcor$consensus )
+fit = eBayes(fit)
+
+resDEall_Scz = topTable(fit, coef='DxSZ', number=1e7 , sort.by='P')
+resDEall_Scz$qvalue = qvalue( resDEall_Scz$P.Value )$qvalue
+resDEall_Scz$gene = geneInfo$geneName[match(rownames(resDEall_Scz), geneInfo$Geneid)]
+resDEall_Scz$symbol = sub("^(ENSG.*)$", NA, resDEall_Scz$gene)
+
+# file = "COS_DE_combined.tsv"
+# write.table( resDEall_Scz[,colnames(resDEall_Scz) != 'symbol'], file=file, row.names=TRUE, quote=FALSE, sep="\t")
+
+
+# usedByScript = list(list(name="differential_expression_plus.R", url="https://bitbucket.org/gabriel_hoffman/scripts/src/Brennand/COS/differential_expression_plus.R"))
+
+# myOutputFile <- synStore(File(file, parentId='syn9771034'),
+#             used=usedByScript,
+#                          activityName="DE results",
+#                          activityDescription="DE results")
+# file.remove(file)
+
+# Gene set enrichment
+# values = resDEall_Scz$qvalue 
+# names(values) = rownames(resDEall_Scz)
+# geneScoreEntrez = rename_ens_to_entrez( values )
+# resEnrich = enrich_mSigDB( geneScoreEntrez, geneSets, cutoff = .20)
+
+values = resDEall_Scz$qvalue 
+names(values) = resDEall_Scz$symbol
+values = values[!is.na(names(values))]
+resEnrich = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = .20)
+```
+
+
+# Differential expression within each cell type
+```{r DEsubsets}
+metadata$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
+
+design = model.matrix( ~ Interaction - 1 , metadata)
+
+cons_separate_cell_type = makeContrasts( 
+    SZNeuron = InteractionSZ_NPC - InteractionCT_NPC, 
+    SZNPC = InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron,  
+    SZinteraction = (InteractionSZ_NPC - InteractionCT_NPC) - (InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron),
+    levels = colnames(design))
+
+fit = lmFit( vobj, design, block=metadata$Donor, correlation=dupcor$consensus )
+fit2 <- contrasts.fit(fit, cons_separate_cell_type)
+fit2 = eBayes(fit2)
+
+resList = list()
+for(key in colnames(cons_separate_cell_type)){
+  res = topTable(fit2, coef=key, number=Inf, sort.by='P')
+  res$qvalue = qvalue( res$P.Value )$qvalue
+  res$gene = geneInfo$geneName[match(rownames(res), geneInfo$Geneid)]
+  resList[[key]] = res
+}
+
+# upload results
+for( key in names(resList)){
+
+  file = paste0(tempdir(), "/DE_", key, ".csv")
+  write.csv( resList[[key]], file, quote=FALSE)
+
+  myOutputFile <- synStore(File(file, parentId='syn7254000'),
+              used=usedByScript,
+                           activityName=paste("DE analysis:", key),
+                           activityDescription=paste("DE analysis:", key))
+
+   file.remove(file) 
+}
+```
+
+```{r MAplot.separate, fig.height=6, fig.width=17}
+# par(mfrow=c(1,3))
+# for(key in names(resList) ){
+#   res = resList[[key]]
+#   v = max(sapply(resList, function(x) max(abs(x$logFC))))
+
+#   plot(res$AveExpr, res$logFC, col=c("black", "red")[(res$qvalue < 0.2)+1], xlab="Average expression", ylab="log Fold Change", ylim=c(-v,v), main=key)
+#   abline(h=0, col="grey")
+# }
+```
+
+# Compare logFC between celltypes
+There is no evidence for case-control effect sizes being different in NPCs and neurons
+```{r compare.logFC.celltypes}
+resList[['SZNeuron']]$se_beta = resList[['SZNeuron']]$logFC / resList[['SZNeuron']]$t
+resList[['SZNPC']]$se_beta = resList[['SZNPC']]$logFC / resList[['SZNPC']]$t
+
+df = merge( resList[['SZNeuron']], resList[['SZNPC']], by='gene')
+df = merge(df, resDEall_Scz, by="gene")
+
+
+variables = c("gene", "logFC.x", "logFC.y", "qvalue", "se_beta.x", "se_beta.y", 't.x', 't.y')
+df2 = melt( df[,variables], id.vars=variables )
+df2 = df2[order(df2$qvalue, decreasing=TRUE),]
+
+# fit = heivr(df2$logFC.x, df2$logFC.y, df2$se_beta.x^2, df2$se_beta.y^2)
+
+cutoff = 0.2
+cutoff2 = 0.03
+xlim = range(c( with(df2, logFC.x - se_beta.x), with(df2, logFC.x + se_beta.x)))
+ylim = range(c( with(df2, logFC.y - se_beta.x), with(df2, logFC.x + se_beta.y)))
+
+ggplot(df2, aes(logFC.x, logFC.y)) + geom_errorbar(aes(ymax = logFC.y + se_beta.y, ymin=logFC.y - se_beta.y), color="grey") +
+ geom_errorbarh(aes(xmax = logFC.x + se_beta.x, xmin=logFC.x - se_beta.x), color="grey") +
+  geom_point(aes(color=(qvalue < cutoff))) + theme_bw(15) + 
+  xlab("logFC in Neurons") + ylab("logFC in NPCs") + scale_colour_manual(values = c("black","red")) + 
+  geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
+  theme(legend.position="none", aspect.ratio=1) + geom_abline(color="grey") + xlim(range(xlim, ylim)) + ylim(range(xlim, ylim)) 
+
+
+lim = range(c( with(df2, t.x), with(df2, t.y)))
+ggplot(df2, aes(t.x, t.y)) + geom_point(aes(color=(qvalue < cutoff))) + theme_bw(15) + 
+  xlab("t-statistic in Neurons") + ylab("t-statistic in NPCs") + scale_colour_manual(values = c("black","red")) + 
+  geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
+  theme(legend.position="none") + geom_abline(color="grey") + xlim(lim) + ylim(lim)
+
+```
+
+## Genes with FDR < 20% within NPC or neuron separately
+```{r DEgenes.separated, results="asis"}
+for(key in names(resList) ){
+
+  txt = switch( key, SZNeuron = "Differential expression between Sz and Controls in Neurons",
+                  SZNPC = "Differential expression between Sz and Controls in NPCs",
+                  SZinteraction = "Genes where case/control difference differs by cell type" )
+
+  cat( txt, "\n" )
+
+  res = resList[[key]]
+
+  print(xtable(res[res$qvalue < 0.2,-c(2,5,6,9)], digits=c(0,2,2,-2,-2,0)))
+}
+```
+
+
+# fancy gene set enrichment 
+```{r enrichment.prep_enrichObj_corrected}
+# vobjRename = vobj
+# rownames(vobjRename) = geneInfo$geneName[match(rownames(vobjRename), geneInfo$Geneid)]
+# rownames(vobjRename) = gsub("^(ENSG.*)$", NA, rownames(vobjRename))
+# vobjRename = vobjRename[!is.na(rownames(vobjRename)),]
+
+# geneSetsCombined_index = ids2indices( geneSetsCombined, rownames(vobjRename))
+
+# enrichObj_corrected = enrichment_DE_analysis(y=vobj,index=geneSetsCombined_index,design=design, contrast = which(colnames(design) == "DxSZ"), block=metadata$Donor, correlation=dupcor$consensus, nrot=99)
+```
+
+
+
+#### Volcano plot
+```{r volcano_Cell.fraction}
+# Volcano plot
+cutoff = 0.20
+cutoff2 = 0.10
+df = resDEall_Scz
+col = rev(c("> 20%"="grey60", "< 20%"="firebrick", "< 10%"="red"))
+df$color = names(col)[3]
+df$color[df$qvalue < cutoff] = names(col)[2]
+df$color[df$qvalue < cutoff2] = names(col)[1]
+df$color = factor(df$color, names(col))
+maxlogFC = max(abs(range(df$logFC)))
+figVolcano = ggplot(df, aes(logFC, -log10(P.Value), colour=color)) + geom_point() + theme_bw(15) +
+  ylab(bquote(-log[10]~p-value)) + xlab(bquote(log[2]~fold~change)) + 
+  scale_color_manual(values = array(col), name="FDR") + 
+  geom_text_repel(data=df[df$color=="< 10%",], aes(label=gene),  min.segment.length = unit(1, "lines"), colour="black", 
+    box.padding = unit(0.3, "lines"),  point.padding = unit(0.3, "lines")) + theme(legend.position=c(.9,.9), aspect.ratio=1) + 
+  xlim(-maxlogFC, maxlogFC)
+  
+figVolcano
+```
+
+#### MA plot
+```{r plotma_Cell.fraction}
+ # plot(resDEall_Scz$AveExpr, resDEall_Scz$logFC, col=c("black", "red")[(resDEall_Scz$qvalue < 0.1)+1], xlab="Average expression", ylab="log Fold Change")
+ #  abline(h=0, col="grey")
+```
+
+# Link PCA to cell fraction
+```{r PCA.cell.fraction}
+
+dcmpAll = prcomp( t(vobj$E) )
+
+idxNeuron = metadata2$Cell.Type == levels(metadata2$Cell.Type)[1]
+idxNPC = metadata2$Cell.Type == levels(metadata2$Cell.Type)[2]
+
+dcmpNeuron = prcomp( t(vobj$E[,idxNeuron]) )
+dcmpNPC = prcomp( t(vobj$E[,idxNPC]) )
+
+frac = dcmpAll$sdev^2 / sum(dcmpAll$sdev^2)
+xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+plot( dcmpAll$x[,1:2], col=col[ metadata$Cell.Type], type='n', xlab=xlab, ylab=ylab, main="all")
+text( dcmpAll$x[,1], dcmpAll$x[,2], as.character(metadata$Sample.Name), col=col[metadata$Cell.Type])
+legend(0, 75, legend=levels(metadata$Cell.Type), fill=col, cex=.8)
+
+frac = dcmpNeuron$sdev^2 / sum(dcmpNeuron$sdev^2)
+xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+plot( dcmpNeuron$x[,1:2], col=col[1], type='n', xlab=xlab, ylab=ylab, main="Neuron")
+text( dcmpNeuron$x[,1], dcmpNeuron$x[,2], as.character(metadata$Sample.Name[idxNeuron]), col=col[1])
+legend(0, 75, legend=levels(metadata$Cell.Type), fill=col, cex=.8)
+
+frac = dcmpNPC$sdev^2 / sum(dcmpNPC$sdev^2)
+xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+plot( dcmpNPC$x[,1:2], col=col[ metadata$Cell.Type], type='n', xlab=xlab, ylab=ylab, main="NPC")
+text( dcmpNPC$x[,1], dcmpNPC$x[,2], as.character(metadata$Sample.Name[idxNPC]), col=col[2])
+legend(0, 75, legend=levels(metadata$Cell.Type), fill=col, cex=.8)
+```
+
+```{r PCA.cell.fraction2, fig.height=7, fig.width=16}
+make_plot = function( dcmp, data, nPC, n_tests, method="pearson"){
+
+  data = data[,order(tolower(colnames(data)), decreasing=TRUE)]
+
+  corPC = cor(dcmp$x[,1:nPC], data, method=method)
+
+  df = melt( corPC )
+  df$value[is.na(df$value)] = 0
+
+  df$signif = c()
+  for(i in 1:nrow(df)){
+    key1 = df$Var1[i]
+    key2 = df$Var2[i]
+    df$signif[i] = ifelse(cor.test(dcmp$x[,key1], data[,key2], method=method)$p.value < 0.05 /n_tests, "*", "")
+  }
+
+  fig = ggplot(df, aes(Var1, Var2, fill=value)) + geom_tile() + theme_bw(15) + xlab("") + ylab("Cell component") +
+    scale_fill_gradient2(name = "Correlation", low='blue', mid="white", high='red', limits=c(-1,1)) + theme(aspect.ratio=ncol(corPC) / nrow(corPC))
+
+  fig + geom_text(aes(Var1, Var2, label=signif)) 
+
+}
+
+# All
+data = metadata2[,colnames(metadata2) %in% colnames(cibersort)]
+nPC = 2
+n_tests = ncol(data) * nPC
+fig1 = make_plot( dcmpAll, data, nPC, n_tests) + theme(legend.justification=c(1,1), legend.position=c(-1,.8)) + ggtitle("All") +
+  theme(plot.title=element_text(hjust=0.5))
+
+# NPC
+data = metadata2[idxNPC,colnames(metadata2) %in% colnames(cibersort)]
+fig2 = make_plot( dcmpNPC, data, nPC, n_tests) + ggtitle("NPC") + ylab("") + 
+    theme(legend.position="none", axis.text.y=element_blank(), plot.title=element_text(hjust=0.5), 
+    axis.ticks.y=element_blank())
+
+# Neuron
+data = metadata2[idxNeuron,colnames(metadata2) %in% colnames(cibersort)]
+fig3 = make_plot( dcmpNeuron, data,nPC, n_tests) + ggtitle("Neuron")  + ylab("") + 
+    theme(legend.position="none", axis.text.y=element_blank(), plot.title=element_text(hjust=0.5), 
+    axis.ticks.y=element_blank())
+
+grid.arrange( fig1, fig2, fig3, ncol=3)
+```
+
+
+
+
+
+# VariancePartition within each cell type
+```{r variancePartition_within_cellType, echo=FALSE, results="hide"}
+
+form = ~ (1|Donor) + (1| Dx) + (1|Sex) 
+
+vpList_by_celltype = list()
+figList = list()
+for( cellType in levels(metadata$Cell.Type) ){
+  idx = (metadata$Cell.Type == cellType)
+
+  vpList_by_celltype[[cellType]] = fitExtractVarPartModel( vobj[,idx], form, metadata[idx,])
+
+  figList[[cellType]] = plotVarPart( vpList_by_celltype[[cellType]], main=cellType )
+}
+```
+
+
+
+
+```{r variancePartition_within_cellType.plot, fig.width=14, echo=FALSE, results="hide"}
+  do.call("grid.arrange", c(figList, ncol=2))
+```
+
+
+
+```{r Sendai.DE}
+
+metadata$SendaiCPM = with(metadata, log2((SendaiReads+1) / (totalReads/1e6)))
+metadata$SendaiCPM[is.na(metadata$SendaiCPM)] = -4.7
+
+# design = model.matrix(~ SendaiCPM + Sex + Cell.Type + RIN, metadata)
+
+# fit = lmFit( vobj, design, block=metadata$Donor, correlation=dupcor$consensus )
+# fit = eBayes(fit)
+
+# resDEall_send = topTable(fit, coef='SendaiCPM', number=1e7 , sort.by='P')
+# resDEall$qvalue = qvalue( resDEall$P.Value )$qvalue
+# resDEall$gene = geneInfo$geneName[match(rownames(resDEall), geneInfo$Geneid)]
+# resDEall$symbol = sub("^(ENSG.*)$", NA, resDEall$gene)
+
+
+# obj = normalize.quantiles(vobj$E)
+# rownames(obj) = rownames(vobj)
+# colnames(obj) = colnames(vobj)
+
+a = rank(metadata$SendaiCPM)
+metadata$SendaiCPM_norm = (a - mean(a)) / sd(a)
+
+design = model.matrix(~ SendaiCPM_norm + Sex + Cell.Type + RIN, metadata)
+
+fitNorm = lmFit( vobj, design, block=metadata$Donor, correlation=dupcor$consensus )
+fitNorm = eBayes(fitNorm)
+
+resDENormSendai = topTable(fitNorm, coef='SendaiCPM_norm', number=1e7 , sort.by='P')
+resDENormSendai$qvalue = qvalue( resDENormSendai$P.Value )$qvalue
+resDENormSendai$gene = geneInfo$geneName[match(rownames(resDENormSendai), geneInfo$Geneid)]
+resDENormSendai$symbol = sub("^(ENSG.*)$", NA, resDENormSendai$gene)
+
+# file = "COS_Sendai_DE.tsv"
+# write.table(resDENormSendai, file, quote=FALSE, sep="\t")
+
+# myOutputFile <- synStore(File(file, parentId='syn9771034'),
+#             used=usedByScript,
+#                          activityName="Sendai differential expression",
+#                          activityDescription="Sendai  differential expression")
+# file.remove(file)
+
+
+# file = '/hpc/users/hoffmg01/psychgen_ips/RNAseq/COS/results/diffExpr/DE_Dx+Cell.Type+Sex.csv'
+# write.csv(resDEall_Scz, file, quote=FALSE)
+
+# myOutputFile <- synStore(File(file, parentId='syn7254000'),
+#             used=usedByScript,
+#                          activityName="DE results",
+#                          activityDescription="DE results")
+# Gene set enrichment
+# values = resDEall_Scz$qvalue 
+# names(values) = rownames(resDEall_Scz)
+# geneScoreEntrez = rename_ens_to_entrez( values )
+
+
+# values = resDEall_Scz$qvalue 
+# names(values) = resDEall_Scz$symbol
+# values = values[!is.na(names(values))]
+
+# if( sum(values < 0.05) < 3){
+#     resEnrich = c()
+# }else{
+#   resEnrich = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+# }
+
+# head(resEnrich)
+
+
+values = resDENormSendai$qvalue 
+names(values) = resDENormSendai$symbol
+values = values[!is.na(names(values))]
+
+if( sum(values < .05) < 3){
+    resEnrichSendaiNorm = c()
+}else{
+  resEnrichSendaiNorm = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+}
+
+# head(resEnrichSendaiNorm)
+
+# file = "COS_enrichments_Sendai_DE.tsv"
+# write.table(resEnrichSendaiNorm[,-1], file, quote=FALSE, sep="\t", row.names=FALSE)
+
+# myOutputFile <- synStore(File(file, parentId='syn9771034'),
+#             used=usedByScript,
+#                          activityName="Enrichments for Sendai DE",
+#                          activityDescription="Enrichments for Sendai DE")
+# file.remove(file)
+```
+
+# Yaminaka factors
+```{r, yaminaka.de}
+kable(resDENormSendai[resDENormSendai$gene %in% c("MYC", "SOX2", "KLF4", "POU5F1"),])
+```
+
+# Sendai differential expression enrichment with Romer
+```{r Sendai.DE.table, fig.width=12}
+# kable(formTable(topRomer(resEnrichSendaiNorm, alternative="mixed")))  
+# kable(formTable(resEnrichSendaiNorm))
+
+file = "COS_Sendai_Expression_DE_enrichment.tsv"
+write.table(resEnrichSendaiNorm, file, quote=FALSE, sep="\t", row.names=FALSE) 
+
+
+usedByScript = list(list(name="differential_expression_plus.R", url="https://bitbucket.org/gabriel_hoffman/scripts/src/Brennand/COS/differential_expression_plus.R"))
+
+myOutputFile <- synStore(File(file, parentId='syn9771034'),
+            used=usedByScript,
+                         activityName="Enrichments for differential expression with respect to Sendai expression")
+file.remove(file)
+
+file = "COS_Differential_Expression.tsv"
+write.table(resDENormSendai, file, quote=FALSE, sep="\t", row.names=FALSE) 
+
+
+usedByScript = list(list(name="differential_expression_plus.R", url="https://bitbucket.org/gabriel_hoffman/scripts/src/Brennand/COS/differential_expression_plus.R"))
+
+myOutputFile <- synStore(File(file, parentId='syn9771034'),
+            used=usedByScript,
+                         activityName="Enrichments for differential expression with respect to Sendai expression")
+file.remove(file)
+
+```
+
+```{r Sendai.DE.gene.plots, fig.width=14, fig.height=17}
+
+topGenes = rownames(resDENormSendai)[order(resDENormSendai$qvalue)[1:10]]
+
+figList = foreach(ensGene = topGenes ) %do% {
+
+  df = data.frame( Sendai = metadata$SendaiCPM, gene = vobj$E[ensGene,], ID = colnames(vobj))
+
+  gene = resDENormSendai$gene[match(ensGene, rownames(resDENormSendai))]
+
+  txt = with(resDENormSendai[ensGene,], paste0('Sendai expression CPM:\t\t\t\tp=', format(P.Value, digits=2), ' q=',format(qvalue, digits=2)))
+
+  txt2 = with(resDENormSendai[ensGene,], paste0('Quantile normalized Sendai expression:\tp=', format(P.Value, digits=2), ' q=',format(qvalue, digits=2)))
+
+  y = max(df$gene) - min(df$gene)
+
+  ymax = max(df$gene) + .3*y
+
+  i = with(df, abs((gene - median(gene))/ sd(gene)) > 1.5)
+
+  ggplot(df, aes(Sendai, gene)) + geom_smooth(method = "lm", se = FALSE, col="firebrick") + geom_point() + theme_bw(15) + 
+    xlab(bquote(Sendai~Expression~(log[2]~CPM))) +
+    ylab(bquote(Expression~(log[2]~CPM))) + geom_text_repel(data=subset(df,i), aes(Sendai, gene, label=ID)) +  
+    annotate('text', x=min(df$Sendai), y=ymax - .1*y, label=paste(txt, txt2, sep='\n'), hjust=0, size=3) + ggtitle(gene) + theme(plot.title=element_text(hjust=0.5), aspect.ratio=1) + ylim(min(df$gene), ymax)  
+}
+   
+   pdf("~/DE_Sendai.pdf", height=18, width=18)
+do.call("grid.arrange", c(figList, ncol=4))
+dev.off()
+```
+
+
+## variancePartition: Influence of metadata on cell fractions
+```{r cibersort.varPart}
+idx = !colnames(cibersort) %in% c('Myelinating_Oligodendrocytes', 'Microglia', 'Myocyte')
+
+formStr = paste("~ (1|Donor) + (1| Dx) + (1|Cell.Type) + (1|Sex)+", paste0(colnames(cibersort)[idx], collapse="+"))
+form = as.formula(formStr)
+
+vpCellFraction = fitExtractVarPartModel( vobj, form, metadata2)
+
+plotVarPart(vpCellFraction)
+plotCorrMatrix(cor(vpCellFraction))
+```
+
+
+
+# Differential expression based on cell fraction
+**Enrichment test for gene positively correlated with cell fraction**
+```{r DE.cellFraction}
+
+resDEComponments = list()
+resEnrichComponents = list()
+for(cellType in levels(metadata2$Cell.Type)){
+  for(cellComponent in colnames(cibersort) ){
+    
+    key = paste(cellType, cellComponent, sep='-')
+
+    idx = (metadata2$Cell.Type == cellType)
+
+    # differential expression
+    design = model.matrix( as.formula(paste('~ ', cellComponent)), metadata2[idx,]) # Cell.Type +
+
+    if(var(design[,2]) < 1e-5){
+      next
+    }
+
+    fit = lmFit( vobj[,idx], design, block=metadata$Donor[idx], correlation=dupcor$consensus )
+    fit = eBayes(fit)
+
+    # qvalue and prepare for enrichment
+    resDEComponments[[key]] = topTable(fit, coef=cellComponent, number=1e7 , sort.by='P')
+    resDEComponments[[key]]$qvalue = qvalue( resDEComponments[[key]]$P.Value )$qvalue
+    resDEComponments[[key]]$gene = geneInfo$geneName[match(rownames(resDEComponments[[key]]), geneInfo$Geneid)]
+    resDEComponments[[key]]$symbol = sub("^(ENSG.*)$", NA, resDEComponments[[key]]$gene)
+
+    # enrichment analysis
+    values = resDEComponments[[key]]$qvalue * sign(resDEComponments[[key]]$logFC)*(-1)
+    names(values) = resDEComponments[[key]]$symbol
+    values = values[!is.na(names(values))]
+    resEnrichComponents[[key]] = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = .05)
+  }
+}
+```
+
+```{r DE.cellFraction.print, results='asis'}
+for(key in names(resEnrichComponents)){
+  knit_print( key )
+  print(kable(formTable(resEnrichComponents[[key]][1:30,-1]), caption=key, row.names=FALSE))
+}
+```
+
+```{r DE.cellFraction.Write.Excel}
+
+file = "Cell_Composition_Score_enrichments.xlsx"
+if( file.exists(file) ){
+  file.remove(file)
+}
+
+for(key in names(resEnrichComponents) ){
+
+  df = resEnrichComponents[[key]][1:30,-1]
+
+  # write.xlsx( df, file=file, sheetName=key, row.names=FALSE, append=TRUE)
+}
+
+usedByScript = list(list(name="differential_expression_plus.R", url="https://bitbucket.org/gabriel_hoffman/scripts/src/Brennand/COS/differential_expression_plus.R"))
+
+# myOutputFile <- synStore(File(file, parentId='syn9771034'),
+#             used=usedByScript,
+#                          activityName="Differential expression with respect to cell component scores")
+
+```    
+
+
+# Compare to CMC DE
+```{r CMC.DE, fig.height=7, fig.width=17}
+
+# CMC / DLPFC
+CMCDE = read.table(getFileLocation(synGet( 'syn3493992' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+CMCDE$qvalue = CMCDE$adj.P.Val
+CMCDE$se = CMCDE$logFC / CMCDE$t
+
+# HBCC / DLPFC microarray
+CMCDE_HBCC = read.table(getFileLocation(synGet( 'syn4941553' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+CMCDE_HBCC$qvalue = CMCDE_HBCC$adj.P.Val
+CMCDE_HBCC$se = CMCDE_HBCC$logFC / CMCDE_HBCC$t
+
+
+geneNames_COS = unique(unlist(lapply(resList, rownames)))
+
+geneNames = unique( c(geneNames_COS, CMCDE$genes, CMCDE_HBCC$genes)) #, CMC2$ensembl_gene_id
+
+dft = data.frame(ensGene = geneNames)
+
+key = 'logFC'
+dft = merge(dft, data.frame(genes = CMCDE$genes, CMC_DLPFC.stat=CMCDE[[key]], CMC_DLPFC.se = CMCDE$se), by.x="ensGene", by.y='genes', all=TRUE)
+dft = merge(dft, data.frame(genes = CMCDE_HBCC$genes, HBCC_DLPFC.stat=CMCDE_HBCC[[key]], HBCC_DLPFC.se = CMCDE_HBCC$se), by.x="ensGene", by.y='genes', all=TRUE)
+# dft = merge(dft, data.frame(genes = CMC2_DLFPC$ensembl_gene_id, CMC2_DLFPC.t=CMC2_DLFPC[[key]]), by.x="ensGene", by.y='genes', all.x=TRUE)
+# dft = merge(dft, data.frame(genes = CMC2_ACC$ensembl_gene_id, CMC2_ACC.t=CMC2_ACC[[key]]), by.x="ensGene", by.y='genes', all.x=TRUE)
+
+dft = merge(dft, data.frame(genes = rownames(resList[['SZNeuron']]), COS_SCZNeuron.stat=resList[['SZNeuron']][[key]],
+  COS_SCZNeuron.se = resList[['SZNeuron']]$se_beta), by.x="ensGene", by.y='genes', all=TRUE)
+
+dft = merge(dft, data.frame(genes = rownames(resList[['SZNPC']]), COS_SZNPC.stat=resList[['SZNPC']][[key]],
+ COS_SZNPC.se = resList[['SZNPC']]$se_beta), by.x="ensGene", by.y='genes', all=TRUE)
+
+resDEall_Scz$se = resDEall_Scz$logFC / resDEall_Scz$t
+dft = merge(dft, data.frame(genes = rownames(resDEall_Scz), COS_all.stat=resDEall_Scz[[key]],
+ COS_all.se =resDEall_Scz$se), by.x="ensGene", by.y='genes', all=TRUE)
+
+
+
+
+
+# dft = merge(dft, data.frame(genes = rownames(resList[['SZinteraction']]), COS_SZinteraction=resList[['SZinteraction']][[key]]), by.x="ensGene", by.y='genes', all.x=TRUE)
+dft = dft[!duplicated(dft$ensGene),]
+rownames(dft) = dft$ensGene
+dft = dft[,-1]
+
+C = cor(dft[,grep("\\.stat", colnames(dft))], use='pairwise.complete.obs', method="spearman")
+
+CSignif = C
+nObs = C
+ii = 1
+for(i in grep("\\.stat", colnames(dft))){
+  jj = 1
+  for(j in grep("\\.stat", colnames(dft))){
+    if( j >= i){
+      next
+    }
+    res = cor.test(dft[,i], dft[,j], use='pairwise.complete.obs', method="spearman", alternative='less')
+    nObs[ii,] = sum(apply(cbind(dft[,i], dft[,j]), 1, function(x) !any(is.na(x))))
+    CSignif[ii,jj] = res$p.value
+    CSignif[jj,ii] = res$p.value
+    jj = jj + 1
+  }
+  ii = ii + 1
+}
+
+# corr(data.frame(CMC_DLPFC.stat, HBCC_DLPFC.stat)[i,], 1/(CMC_DLPFC.se[i]^2 + HBCC_DLPFC.se[i]^2) ))
+
+# key1 = "HBCC_DLPFC"
+# key2 = "COS_SCZNeuron"
+
+# V = data.frame(dft[[paste0(key1, ".stat")]], dft[[paste0(key2, ".stat")]])
+# D = 1/dft[[paste0(key1, ".se")]]^2 +  dft[[paste0(key2, ".se")]]^2
+# i = !is.na(D)
+# corr(V[i,], D[i]
+
+
+
+# p-value
+df = melt(CSignif)
+df = df[with(df, Var1 %in% c('COS_SCZNeuron.stat', 'COS_SZNPC.stat', 'COS_all.stat')),] # COS_SZinteraction
+df = df[with(df, ! Var2 %in% c('COS_SCZNeuron.stat', 'COS_SZNPC.stat', 'COS_all.stat', 'COS_SZinteraction.stat')),]
+df = data.frame(df, stringsAsFactors=FALSE)
+df$Var1 = gsub("_", '/', df$Var1)
+df$Var2 = gsub(".stat", '', df$Var2)
+df$Var2 = gsub("_", '/', df$Var2)
+
+# df = df[-grep("CMC2", df$Var2),]
+df$Var1 = factor(df$Var1, rev(unique(df$Var1)))
+df$Var2 = factor(df$Var2, rev(unique(df$Var2)))
+
+#wheel("dodgerblue", 2)
+collocal = c( "#FF8D1E", "#1E90FF")
+
+fig1_tstat = ggplot(df, aes(Var1, -log10(value), fill=Var2)) + geom_bar(stat='identity', position=position_dodge()) + xlab("Differential expression between cases and controls")  +
+  ylab(bquote(-log[10]~p-value)) + guides(fill=guide_legend(title="Post mortem datasets")) + theme_bw(15) + geom_hline(yintercept=-log10(0.05/nrow(df)), lty=2, color="grey20") + ggtitle('Spearman correlation between t-statstics') +
+    theme(plot.title=element_text(hjust=0.5), legend.justification=c(1,1), legend.position=c(.95,.7)) +
+    scale_fill_manual(values=collocal) +  coord_flip() + theme(aspect.ratio=1)
+  # + scale_x_discrete(labels=rev(c("Neuron", "NPC", "Neuron - NPC\ndifferences"))
+
+# fig1_tstat
+
+
+
+
+
+# Correlation
+df = melt(C)
+df = df[with(df, Var1 %in% c('COS_SCZNeuron.stat', 'COS_SZNPC.stat', 'COS_all.stat')),] # , 'COS_SZinteraction'
+df = df[with(df, ! Var2 %in% c('COS_SCZNeuron.stat', 'COS_SZNPC.stat', 'COS_all.stat',  'COS_SZinteraction.stat')),]
+df = data.frame(df, stringsAsFactors=FALSE)
+
+df$left = c()
+df$right = c()
+for(i in 1:nrow(df)){
+  key1 = as.character(df$Var1[i])
+  key2 = as.character(df$Var2[i])
+  res = cor.test(dft[,key1], dft[,key2], use='pairwise.complete.obs', method="spearman")
+  df$cor[i] = res$estimate
+  df$left[i] = res$conf.int[1]
+  df$right[i] = res$conf.int[2]
+  df$p.value[i] = res$p.value
+}
+
+df$Var1 = gsub("_", '/', df$Var1)
+df$Var2 = gsub(".t", '', df$Var2)
+df$Var2 = gsub("_", '/', df$Var2)
+
+# df = df[-grep("CMC2", df$Var2),]
+
+df$Var1 = factor(df$Var1, rev(unique(df$Var1)))
+df$Var2 = factor(df$Var2, rev(unique(df$Var2)))
+
+fig2_tstat = ggplot(df, aes(Var1, cor, fill=Var2)) + geom_bar(stat='identity', position=position_dodge()) + xlab("Differential expression between cases and controls") +
+  ylab(bquote(Correlation~(Spearman~rho))) + guides(fill=guide_legend(title="Post mortem datasets")) + theme_bw(15) + 
+  ggtitle('Spearman correlation between t-statstics') +
+    theme(plot.title=element_text(hjust=0.5), legend.justification=c(1,1), legend.position=c(.95,.7)) +
+    scale_x_discrete(labels=c("Neuron+NPC", "Neuron", "NPC")) + coord_flip() + theme(aspect.ratio=1) +
+    scale_fill_manual(values=collocal) #+ geom_errorbar(aes(x=Var1, ymin=left, ymax=right), position=position_dodge(), width = 0.5)
+# fig2_tstat
+
+i = grep("/all", df$Var1)
+figConcordanceFC = ggplot(df[i,], aes(Var1, cor, fill=Var2)) + geom_bar(stat='identity', position=position_dodge()) + 
+  xlab('') + ylab(bquote(Correlation~(Spearman~rho))) +
+  guides(fill=guide_legend(title="Post mortem datasets")) + theme_bw(15) +
+  theme(plot.title=element_text(hjust=0.5), aspect.ratio=1/4) +
+  coord_flip() + scale_fill_manual(values=collocal)
+  #, legend.justification=c(1,1), legend.position=c(.95,.7)
+
+
+i = grep("/all", df$Var1)
+figConcordanceP = ggplot(df[i,], aes(Var1, -log10(p.value), fill=Var2)) + geom_bar(stat='identity', position=position_dodge()) + 
+  xlab("") + ylab(bquote(-log[10]~p-value)) +
+  guides(fill=guide_legend(title="Post mortem datasets")) + theme_bw(15) +
+  theme(plot.title=element_text(hjust=0.5), aspect.ratio=1/4) +
+  coord_flip() + scale_fill_manual(values=collocal)
+    #, legend.justification=c(1,1), legend.position=c(.95,.7)
+
+
+
+# grid.arrange(fig2_tstat, fig1_tstat, ncol=2) 
+```
+
+
+
+
+
+# Disease plot
+```{r disease.plot}
+# layout = matrix(c(1,2,3, 1,2,4), ncol = 3, byrow = TRUE)ggg        
+# grid.arrange(figVolcano, figCompare)
+
+grid.arrange(figConcordanceFC, figConcordanceP)
+```
+
+```{r sumstats.more, fig.height=5.66, fig.width=17}
+# all
+# df = melt(abs(C))
+# df = df[with(df, Var1 %in% c('COS_SCZNeuron', 'COS_SZNPC', 'COS_SZinteraction')),]
+# df = df[with(df, ! Var2 %in% c('COS_SCZNeuron', 'COS_SZNPC', 'COS_SZinteraction')),]
+
+# ggplot(df, aes(Var1, value, fill=Var2)) + geom_bar(stat='identity', position=position_dodge()) + xlab("COS dataset") +
+#   ylab("Correlation (Spearman)") + guides(fill=guide_legend(title="Post mortem data")) + theme_bw(15)
+
+# library(meta)
+
+# corMetaAnalysis = metacor(c(C['COS_SCZNeuron','CMC_DLPFC.t'], (C)['COS_SCZNeuron','HBCC_DLPFC.t']), 
+#   c(nObs['COS_SCZNeuron','CMC_DLPFC.t'], nObs['COS_SCZNeuron','HBCC_DLPFC.t']))
+
+# corMetaAnalysis = metacor(c(C['COS_SZNPC','CMC_DLPFC.t'], abs(C)['COS_SZNPC','HBCC_DLPFC.t']), 
+#   c(nObs['COS_SZNPC','CMC_DLPFC.t'], nObs['COS_SZNPC','HBCC_DLPFC.t']))
+
+# corrValues = c(C['COS_SCZNeuron','CMC_DLPFC.t'], (C)['COS_SCZNeuron','HBCC_DLPFC.t'],
+#             C['COS_SZNPC','CMC_DLPFC.t'], (C)['COS_SZNPC','HBCC_DLPFC.t'])
+  
+# Nvalues = c(nObs['COS_SCZNeuron','CMC_DLPFC.t'], (nObs)['COS_SCZNeuron','HBCC_DLPFC.t'],
+#             nObs['COS_SZNPC','CMC_DLPFC.t'], (nObs)['COS_SZNPC','HBCC_DLPFC.t'])
+
+
+# metacor(corrValues, Nvalues)
+
+plot_concordance = function( df ){
+  lim = range(c(df$t.x, df$t.y))
+  res = cor.test(df$t.x, df$t.y, method="pearson", alternative='greater')#, alternative="greater")
+  txt = paste('R =', format(res$estimate, digits=3), '\np-value =', format(res$p.value, digits=2))
+  res2 = cor.test(df$t.x, df$t.y, method="spearman", continuity=TRUE)#, alternative="greater")
+  txt2 = paste('rho =', format(res2$estimate, digits=3), '\np-value =', format(res2$p.value, digits=2))
+ 
+  ggplot(df, aes(t.x, t.y)) + geom_point() + theme_bw(15) + geom_abline(colour="grey", lty=2) + 
+    geom_hline(yintercept = 0,colour="grey") +  xlim(lim) +  ylim(lim) + 
+    geom_smooth(method = "lm", se = TRUE, color="firebrick")  + 
+    annotate("text", x = min(lim) * .9, y = max(lim) * .9, label = paste(txt, txt2, sep="\n") , hjust=0) + 
+    theme(plot.title = element_text(hjust = 0.5)) + theme(aspect.ratio=1)
+}
+
+# vs CMC
+# df = merge(CMCDE, resList[['SZNeuron']],by.x="genes", by.y="row.names")
+# fig1 = plot_concordance( df ) + ylab("t-statistic from Neurons") + xlab("t-statistic from CMC")+ ggtitle("Neurons")
+
+# df = merge(CMCDE, resList[['SZNPC']],by.x="genes", by.y="row.names")
+# fig2 = plot_concordance( df ) + ylab("t-statistic from NPC") + xlab("t-statistic from CMC") + ggtitle("NPC")
+
+# df = merge(CMCDE, resList[['SZinteraction']],by.x="genes", by.y="row.names")
+# fig3 = plot_concordance( df ) + ylab("t-statistic from Neuron-NPC difference") + xlab("t-statistic from CMC") + ggtitle("Neuron-NPC difference")
+
+# grid.arrange(fig1, fig2, fig3, ncol=3)    
+
+# vs HBCC
+# df = merge(CMCDE_HBCC, resList[['SZNeuron']],by.x="genes", by.y="row.names")
+# fig4 = plot_concordance( df ) + xlab("t-statistic from HBCC") + xlab("t-statistic from HBCC") + ylab("t-statistic from Neuron") + ggtitle("SZNeuron")
+
+# df = merge(CMCDE_HBCC, resList[['SZNPC']],by.x="genes", by.y="row.names")
+# fig5 = plot_concordance( df ) + xlab("t-statistic from HBCC") + xlab("t-statistic from HBCC") + ylab("t-statistic from NPC") + ggtitle("SZNPC")
+
+# df = merge(CMCDE_HBCC, resList[['SZinteraction']],by.x="genes", by.y="row.names")
+# fig6 = plot_concordance( df ) + xlab("t-statistic from HBCC") + xlab("t-statistic from HBCC") + ylab("t-statistic from Neuron-NPC difference") + ggtitle("Neuron-NPC difference")
+
+
+# grid.arrange(fig4, fig5, fig6, ncol=3)    
+```
+
+```{r HBCC_vs_CMC}
+# HBCC vs CMC
+df = merge(CMCDE, CMCDE_HBCC,by="genes")
+ plot_concordance( df ) + ylab("t-statistic from HBCC") + ggtitle("HBCC vs CMC")
+
+
+# df1 = CMC2[(CMC2$Comparison == 'Control_vs_SCZ') & (CMC2$Tissue == "DLPFC"),]
+# df2 = CMC2[(CMC2$Comparison == 'Control_vs_SCZ') & (CMC2$Tissue == "ACC"),]
+
+# df = merge(df1, df2, by='ensembl_gene_id')
+
+# plot_concordance( df ) + xlab("t-statistic from CMC/DLPFC") + xlab("t-statistic from CMC/ACC")
+
+
+# df = merge(df1, resList[['SZNeuron']],by.x="ensembl_gene_id", by.y="row.names")
+# plot_concordance( df ) + ylab("t-statistic from CMC - DLPFC")  + ylab("t-statistic from Neurons") + ggtitle("Neurons")
+
+
+# df = merge(df2, resList[['SZNeuron']],by.x="ensembl_gene_id", by.y="row.names")
+# plot_concordance( df ) + ylab("t-statistic from CMC - ACC")  + ylab("t-statistic from Neurons") + ggtitle("Neurons")
+
+
+# a = merge(CMCDE, df1, by.x="genes", by.y='ensembl_')
+#  plot_concordance(a)
+
+```
+
+```{r combined_tstats, fig.height=7}
+# grid.arrange(fig1, fig2_tstat, fig1_tstat, ncol=3)   
+```
+
+```{r CMC_HBCC_COS, fig.height=12, fig.width=12}
+plot_concordance_logFC = function( df ){
+  lim = range(c(df$logFC.x, df$logFC.y))
+  res = cor.test(df$logFC.x, df$logFC.y, method="pearson", alternative='greater')#, alternative="greater")
+  txt = paste('R =', format(res$estimate, digits=3), '\np-value =', format(res$p.value, digits=2))
+  res2 = cor.test(df$logFC.x, df$logFC.y, method="spearman", continuity=TRUE, alternative="greater")
+  txt2 = paste('rho =', format(res2$estimate, digits=3), '\np-value =', format(res2$p.value, digits=2))
+ 
+  ggplot(df, aes(logFC.x, logFC.y)) + geom_point() + theme_bw(15) + geom_abline(colour="grey", lty=2) + 
+    geom_hline(yintercept = 0,colour="grey") +  xlim(lim) +  ylim(lim) + 
+    geom_smooth(method = "lm", se = TRUE, color="firebrick")  + 
+    annotate("text", x = min(lim) * .9, y = max(lim) * .9, label = paste(txt, txt2, sep="\n") , hjust=0) + 
+    theme(plot.title = element_text(hjust = 0.5)) + theme(aspect.ratio=1)
+}
+
+
+df = merge(CMCDE, resDEall_Scz,by.x="genes", by.y="row.names")
+fig1 = plot_concordance_logFC( df ) + ylab("logFC from COS") + xlab("logFC from CommonMind") + ggtitle("CommonMind vs COS (logFC)") + xlim(min(df$logFC.x), max(df$logFC.x))
+
+df = merge(CMCDE_HBCC, resDEall_Scz,by.x="genes", by.y="row.names")
+fig2 = plot_concordance_logFC( df ) + ylab("logFC from COS") + xlab("logFC from HBCC") + ggtitle("HBCC vs COS (logFC)")  + xlim(min(df$logFC.x), max(df$logFC.x))
+
+
+df = merge(CMCDE, resDEall_Scz,by.x="genes", by.y="row.names")
+fig3 = plot_concordance( df ) + ylab("t-statistic from COS") + xlab("t-statistic from CommonMind") + ggtitle("CommonMind vs COS (t-statistic)")
+
+df = merge(CMCDE_HBCC, resDEall_Scz,by.x="genes", by.y="row.names")
+fig4 = plot_concordance( df ) + ylab("t-statistic from COS") + xlab("t-statistic from HBCC") + ggtitle("HBCC vs COS (t-statistic)")
+
+grid.arrange(fig1, fig2, fig3, fig4, ncol=2)   
+```
+
+
+
+
+```{r ESS_figure, fig.height=7, fig.width=9}
+
+
+library(ggplot2) 
+library(variancePartition)
+library(gridExtra)
+
+
+get_Ne = function(N_total, w, m, rho, scale=TRUE){
+  k = N_total / (1 + (m-1)*w)
+
+    Ne  = (m*k) / (1+rho*(m-1)) 
+
+    if( scale ){
+      Ne = Ne / N_total
+    }
+
+    return( Ne )
+}
+
+plot_Ne = function(N_total, w, m_max){
+
+  # total cost.  Equals total number of experiments when w 1
+  # N_total = 100
+
+  # given that the first experiment from a donor has cost 1,
+  # w is the cost of each successive experiment from that same donor
+  # w = .1
+
+  rho = seq(0, 1, length.out=100)
+  df = data.frame(m=c(), Ne=c(), rho=c())
+
+  m_array = c(1:m_max)
+  for(m in m_array){
+    
+  Ne = get_Ne(N_total, w, m, rho, scale=TRUE)
+
+    df = rbind(df, data.frame(m=as.character(m), Ne, rho))
+  }
+
+  shifter <- function(x, n = 1) {
+    if (n == 0) x else c(tail(x, -n), head(x, n))
+  }
+
+  col = rev(shifter(setColors("#CD2626", m_max)))
+
+  ggplot() + geom_line(data=df, aes(100*rho, Ne, colour=m), size=2) + theme_bw() + xlab("Donor effect (%)") + ylab("Increase in effective sample size per unit cost") + theme(aspect.ratio=1) + 
+    ggtitle(paste("Relative cost:", 100*w, "%")) + theme(plot.title=element_text(hjust=0.5))  + 
+    scale_colour_manual(values= col, name = "replicates\nper donor")
+}
+
+add_points = function(fig, rho, w, col, yval1 = 0.25){
+  
+  data = data.frame(m=c(1:m_max), Ne=rep(NA, m_max), rho=rho)
+
+  for(i in 1:m_max){
+    data$Ne[i] = get_Ne(100, w, i, rho/100)
+  }
+
+  a = data.frame(rho=rho, yval1=yval1)
+  fig + geom_segment(data=a, aes(x = rho, y = 0, xend = rho, yend = yval1), colour = col, arrow = arrow(length = unit(0.02, "npc"))) + geom_point(data=data, aes(x=rho, y=Ne), colour=col, shape=16, size=3 )
+}
+
+
+vpGENESIPS = read.table(getFileLocation(synGet( 'syn9698517' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
+
+vpMerge = merge( vpGENESIPS[,'Indiv',drop=FALSE], vpCellFrac2[,'Donor',drop=FALSE], by='row.names'  )
+colnames(vpMerge) = c("gene", "GENESIPS", "COS")
+rownames(vpMerge) = vpMerge$gene
+vpMerge = vpMerge[,-1]
+
+
+vpcolors = setColors("steelblue1", 2) #c("orange", "#005AFF")
+xvalues = apply(vpMerge,2, median) * 100
+
+m_max = 3
+
+figList = list()
+figList[[1]] = plot_Ne(100, 1, m_max) + ylim(0, 1) + theme(legend.justification=c(1,0), legend.position=c(.95,.70))
+
+figList[[2]] = plot_Ne(100, .5, m_max) + ylim(0, 2.2) + theme(legend.position='none')
+
+figList[[3]] = plot_Ne(100, .3, m_max) + ylim(0, 2.2) + theme(legend.position='none')
+
+cost = c(1, .5, .3)
+yval = c(.125, 0.25, 0.25)
+i = 1
+for(w in cost){
+  figList[[i]] = add_points( figList[[i]], xvalues[1], w, vpcolors[1], yval[i])
+  figList[[i]] = add_points( figList[[i]], xvalues[2], w, vpcolors[2], yval[i])
+  i = i + 1
+}
+
+figList[[4]] = plotVarPart(vpMerge, col=vpcolors) + coord_flip() + theme_bw() + theme(legend.position="none") + scale_y_continuous(position = "right")# + ylab("Donor effect (%)")
+
+figList[[5]] = ggplot() + theme_void()
+
+
+# standardize size
+gA <- ggplotGrob(figList[[1]])
+gB <- ggplotGrob(figList[[4]])
+maxWidth = grid::unit.pmax(gA$widths[2:5], gB$widths[2:5])
+gA$widths[2:5] <- as.list(maxWidth)
+gB$widths[2:5] <- as.list(maxWidth)
+figList[[1]] = gA
+figList[[4]] = gB
+
+layout = matrix(c(1, 1,2, 1, 1, 3,4,4,5), nrow = 3, byrow = TRUE)
+
+grid.arrange(figList[[1]], figList[[2]], figList[[3]], figList[[4]], figList[[5]], 
+  layout_matrix = layout, heights=c(1,1, .4), padding = unit(0.05, "line"))
+```
+
+
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
