@@ -7,6 +7,7 @@ documentclass: article
 output: 
   html_document:
   toc: true
+  smart: false
 ---
 
 Data is available on Synapse.
@@ -1019,6 +1020,25 @@ for( cellType in levels(metadata$Cell.Type) ){
   do.call("grid.arrange", c(figList, ncol=2))
 ```
 
+# Compare donor effect
+```{r compare_donor_effect}
+df = data.frame(Neuron  = vpList_by_celltype[["6_wk_FB_neuron"]]$Donor,
+                NPC     = vpList_by_celltype[["NPC"]]$Donor)
+
+resCorPearson = cor.test(df$Neuron, df$NPC, method="pearson")
+resCorSpearman = cor.test(df$Neuron, df$NPC, method="spearman")
+
+fig1 = ggplot(df, aes(NPC, Neuron)) + geom_point(size=1) + theme_bw(16) + geom_abline(color="grey")
+
+concordance  = with(df, Neuron - NPC)
+
+fig2 = ggplot(subset(df, Neuron + NPC > 1e-2),aes(Neuron - NPC)) + geom_histogram(aes(y = ..density..)) + theme_bw(16)
+
+grid.arrange(fig1, fig2, ncol=2)
+
+
+
+```
 
 # variancePartition: include technical variables 
 ```{r Supplement.vpAll}
@@ -1111,9 +1131,9 @@ kable(resDEall_Scz[resDEall_Scz$qvalue < .20,c(1:4, 7, 8)])
 
 # Differential expression within each cell type
 ```{r DEsubsets}
-metadata$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
+metadata2$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
 
-design = model.matrix( ~ Interaction - 1 , metadata)
+design = model.matrix( ~ Interaction - 1 + MEF + Fibroblast , metadata2)
 
 cons_separate_cell_type = makeContrasts( 
     SZNeuron = InteractionSZ_NPC - InteractionCT_NPC, 
