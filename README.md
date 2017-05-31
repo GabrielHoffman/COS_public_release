@@ -29,3 +29,8 @@ You must register with Synapse and have permission to read download this data
 ```
 rmarkdown::render("compare_differential_expression.Rmd")
 ```
+
+Coexpression analysis
+```
+rmarkdown::render("run_WGCNA.Rmd")
+```
