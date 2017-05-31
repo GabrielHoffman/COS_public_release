@@ -1,5 +1,5 @@
 
-<img src="image/study_design.png" width="200">
+<img src="image/study_design.png" width="600">
 
 ## Public release of code for analysis for COS cohort 
 
