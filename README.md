@@ -1,3 +1,6 @@
+
+<img src="image/study_design.png" width="200">
+
 ## Public release of code for analysis for COS cohort 
 
 All code is in R and depends on packages from CRAN and Bioconductor.
