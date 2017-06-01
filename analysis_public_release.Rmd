@@ -40,7 +40,8 @@ folder = c( "./results/differential_expression/Schizophrenia",
             "./results/differential_expression/Cell_Composition/", 
             "./results/differential_expression/Sendai/", 
             "./results/variancePartition/",
-            "results/differential_expression/cellType/")
+            "./results/differential_expression/cellType/", 
+            "./results/differential_expression/Schizophrenia/CTC_score/")
 
 sapply(folder, function(x) {
   if( !file.exists(x)){
@@ -781,7 +782,7 @@ metadata2$Fibroblast_Neuron = with(metadata2, Fibroblast*(gsub(" ", "_",Cell.Typ
 
 # form = ~ 0 + Cell.Type + Neuron:Cell.Type + Fibroblast_Neuron 
 # form = ~ 0 + Cell.Type + Neuron:Cell.Type + Myocyte_Neuron + Astrocytes_Neuron + Sex
-form = ~ 0 + Cell.Type + MEF:Cell.Type + Fibroblast:Cell.Type
+form = ~ 0 + Cell.Type + Fibroblast:Cell.Type #  + MEF:Cell.Type
 
 fitList = fitVarPartModel( vobj, form, metadata2, fxn=function(fit){
   residuals(fit) + t(model.matrix(~ 0 + fit$model$Cell.Type) %*% coef(fit)[1:2])
@@ -1017,11 +1018,18 @@ for( cellType in levels(metadata$Cell.Type) ){
 ```
 
 ```{r variancePartition_within_cellType.plot, fig.width=14, echo=FALSE, results="hide"}
-  do.call("grid.arrange", c(figList, ncol=2))
+do.call("grid.arrange", c(figList, ncol=2))
+
+for( cellType in levels(metadata$Cell.Type) ){
+ 
+  file = paste0("results/variancePartition/variancePartition_", cellType, ".tsv")
+  df = data.frame(geneName = rownames(vpList_by_celltype[[cellType]]), vpList_by_celltype[[cellType]])
+  write.table(df, file, quote=FALSE, row.names=FALSE, sep="\t")
+}
 ```
 
 # Compare donor effect
-```{r compare_donor_effect}
+```{r compare_donor_effect, fig.height=3.5, message=FALSE}
 df = data.frame(Neuron  = vpList_by_celltype[["6_wk_FB_neuron"]]$Donor,
                 NPC     = vpList_by_celltype[["NPC"]]$Donor)
 
@@ -1035,9 +1043,6 @@ concordance  = with(df, Neuron - NPC)
 fig2 = ggplot(subset(df, Neuron + NPC > 1e-2),aes(Neuron - NPC)) + geom_histogram(aes(y = ..density..)) + theme_bw(16)
 
 grid.arrange(fig1, fig2, ncol=2)
-
-
-
 ```
 
 # variancePartition: include technical variables 
@@ -1133,7 +1138,9 @@ kable(resDEall_Scz[resDEall_Scz$qvalue < .20,c(1:4, 7, 8)])
 ```{r DEsubsets}
 metadata2$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
 
-design = model.matrix( ~ Interaction - 1 + MEF + Fibroblast , metadata2)
+form = ~ Interaction - 1 + MEF + Fibroblast
+
+design = model.matrix( form , metadata2)
 
 cons_separate_cell_type = makeContrasts( 
     SZNeuron = InteractionSZ_NPC - InteractionCT_NPC, 
@@ -1158,6 +1165,45 @@ for( key in names(resList)){
   write.table( data.frame(geneName = rownames(resList[[key]]), resList[[key]]), file, quote=FALSE, sep="\t", row.names=FALSE)
 }
 ```
+
+```{r DE.each.CTC.score}
+for(covariate in c('NULL',colnames(cibersort)) ){
+
+  metadata2$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
+
+  if( covariate == 'NULL' ){
+    form = ~ Interaction - 1
+  }else{
+    form = as.formula(paste('~ Interaction - 1 +', covariate))
+  }
+
+  design = model.matrix( form , metadata2)
+
+  cons_separate_cell_type = makeContrasts( 
+      SZNeuron = InteractionSZ_NPC - InteractionCT_NPC, 
+      SZNPC = InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron,  
+      SZinteraction = (InteractionSZ_NPC - InteractionCT_NPC) - (InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron),
+      levels = colnames(design))
+
+  fit = lmFit( vobj, design, block=metadata$Donor, correlation=dupcor$consensus )
+  fit2 <- contrasts.fit(fit, cons_separate_cell_type)
+  fit2 = eBayes(fit2)
+
+  resList = list()
+  for(key in colnames(cons_separate_cell_type)){
+    res = topTable(fit2, coef=key, number=Inf, sort.by='P')
+    res$qvalue = qvalue( res$P.Value )$qvalue
+    res$gene = geneInfo$geneName[match(rownames(res), geneInfo$Geneid)]
+    resList[[key]] = res
+
+    for( key in names(resList)){
+      file = paste0("results/differential_expression/Schizophrenia/CTC_score/COS_DE_", key, '_', covariate,".tsv")
+      write.table( data.frame(geneName = rownames(resList[[key]]), resList[[key]]), file, quote=FALSE, sep="\t", row.names=FALSE)
+    }
+  }
+}
+```
+
 
 ### Compare logFC between celltypes
 ```{r compare.logFC.celltypes}
@@ -1228,6 +1274,123 @@ kable(res[res$qvalue < 0.2,c(1:4, 7, 8)])
 
 # enrichObj_corrected = enrichment_DE_analysis(y=vobj,index=geneSetsCombined_index,design=design, contrast = which(colnames(design) == "DxSZ"), block=metadata$Donor, correlation=dupcor$consensus, nrot=99)
 ```
+
+# Effect of correcting for Fibroblast score on case-control t-statistics in NPCs
+We have demonstrated that correcting for the fibroblast score is important, especially in boosting concordance with HBCC.  So what genes are affected by this correction?  In order to test this, I compared the absolute value of the t-statstic (the test-statistic used compute the p-value) from the adjusted and unadjusted test.
+```{r compare.t.NPC, fig.height=4.5, fig.width=9}
+resDE_NPC_NULL = read.table(getFileLocation(synGet( 'syn9920865' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
+resDE_NPC_Fibroblast = read.table(getFileLocation(synGet( 'syn9920857' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
+
+resDE_NPC_NULL = resDE_NPC_NULL[order(resDE_NPC_NULL$geneName),]
+resDE_NPC_Fibroblast = resDE_NPC_Fibroblast[order(resDE_NPC_Fibroblast$geneName),]
+
+df = data.frame(gene = resDE_NPC_NULL$gene,none = abs(resDE_NPC_NULL$t), Fibroblast = abs(resDE_NPC_Fibroblast$t) )
+df$difference = with(df, Fibroblast - none)
+df$color = rep('remaining', nrow(df))
+cutoff1 = sort(df$difference)[nrow(df) - 500]
+cutoff2 = sort(df$difference)[501]
+df$color[df$d > cutoff1] = "top 500"
+df$color[df$d < cutoff2] = "bottom 500"
+col = c("red", "blue", "black")
+df$color = factor(df$color, c("top 500", "bottom 500", "remaining"))
+# table(df$color)
+
+fig1 = ggplot(df, aes(none, Fibroblast, colour=color)) + geom_point() + theme_bw(14) + scale_colour_manual(values = col, name = "Change in |t|") + geom_abline(colour="grey", lty=2) + xlab('|t| Original') + ylab('|t| after correcting for Fibroblast score') + theme(legend.position = c(.2, .8))
+
+fig2 =  qplot(df$difference, geom="histogram", bins=50) + theme_bw(14) + xlab("Fiboblast |t| - original |t|") + geom_vline(xintercept=cutoff1, col="red", lty=2) + geom_vline(xintercept=cutoff2, col="blue", lty=2)
+
+do.call("grid.arrange", list(fig1, fig2, ncol=2))
+```
+
+```{r compare.t.NPC.enrichment, result='asis'}
+values = ifelse(df$color != "remaining", 0, 1)
+names(values) = df$gene
+values = values[grep('^ENSG', names(values), invert=TRUE)]
+resEnrichAll = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+
+# kable(resEnrichAll[1:3,])
+kable(resEnrichAll[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```
+
+## up only
+```{r compare.t.NPC.enrichment.up, result='asis'}
+# gene enrichment
+values = ifelse(df$color == "top 500", 0, 1)
+names(values) = df$gene
+values = values[grep('^ENSG', names(values), invert=TRUE)]
+resEnrichUp = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+
+values = ifelse(df$color == "bottom 500", 0, 1)
+names(values) = df$gene
+values = values[grep('^ENSG', names(values), invert=TRUE)]
+resEnrichDown = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+
+kable(resEnrichUp[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```
+
+## downonly
+```{r compare.t.NPC.enrichment.down, result='asis'}
+kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```
+
+# Effect of correcting for Fibroblast score on case-control t-statistics in Neurons
+```{r compare.t.neuron, fig.height=4.5, fig.width=9}
+resDE_neuron_NULL = read.table(getFileLocation(synGet( 'syn9920853' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
+resDE_neuron_Fibroblast = read.table(getFileLocation(synGet( 'syn9920845' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
+
+resDE_neuron_NULL = resDE_neuron_NULL[order(resDE_neuron_NULL$geneName),]
+resDE_neuron_Fibroblast = resDE_neuron_Fibroblast[order(resDE_neuron_Fibroblast$geneName),]
+
+df = data.frame(gene = resDE_neuron_NULL$gene,none = abs(resDE_neuron_NULL$t), Fibroblast = abs(resDE_neuron_Fibroblast$t) )
+df$difference = with(df, Fibroblast - none)
+df$color = rep('remaining', nrow(df))
+cutoff1 = sort(df$difference)[nrow(df) - 500]
+cutoff2 = sort(df$difference)[501]
+df$color[df$d > cutoff1] = "top 500"
+df$color[df$d < cutoff2] = "bottom 500"
+col = c("red", "blue", "black")
+df$color = factor(df$color, c("top 500", "bottom 500", "remaining"))
+# table(df$color)
+
+fig1 = ggplot(df, aes(none, Fibroblast, colour=color)) + geom_point() + theme_bw(14) + scale_colour_manual(values = col, name = "Change in |t|") + geom_abline(colour="grey", lty=2) + xlab('|t| Original') + ylab('|t| after correcting for Fibroblast score') + theme(legend.position = c(.2, .8))
+
+fig2 = qplot(df$difference, geom="histogram", bins=50) + theme_bw(14) + xlab("Fiboblast |t| - original |t|") + geom_vline(xintercept=cutoff1, col="red", lty=2) + geom_vline(xintercept=cutoff2, col="blue", lty=2)
+
+do.call("grid.arrange", list(fig1, fig2, ncol=2))
+```
+
+```{r compare.t.neuron.enrichment, result='asis'}
+values = ifelse(df$color != "remaining", 0, 1)
+names(values) = df$gene
+values = values[grep('^ENSG', names(values), invert=TRUE)]
+resEnrichAll = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+
+kable(resEnrichAll[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```
+
+## up only
+```{r compare.t.neuron.enrichment.up, result='asis'}
+# gene enrichment
+values = ifelse(df$color == "top 500", 0, 1)
+names(values) = df$gene
+values = values[grep('^ENSG', names(values), invert=TRUE)]
+resEnrichUp = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+
+values = ifelse(df$color == "bottom 500", 0, 1)
+names(values) = df$gene
+values = values[grep('^ENSG', names(values), invert=TRUE)]
+resEnrichDown = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
+
+kable(resEnrichUp[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```
+
+## downonly
+```{r compare.t.neuron.enrichment.down, result='asis'}
+kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```
+
+
+
 
 
 
