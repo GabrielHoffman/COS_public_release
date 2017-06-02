@@ -34,6 +34,10 @@ cl <- makeCluster(nthreads)
 registerDoParallel(cl)
 
 synapseLogin()
+
+if( ! file.exists("results/coexpression/modules/") ){
+  dir.create("results/coexpression/modules/", recursive=TRUE)
+}
 ```
 
 ```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
@@ -162,7 +166,7 @@ isexpr = read.csv(getFileLocation(synGet( 'syn9908114' )), row.names=1, header=F
 # isexpr_exon = read.csv(getFileLocation(synGet( 'syn7113733' )), row.names=1, header=FALSE)[,1]
 
 # get gene annotations
-geneInfo = read.csv(getFileLocation(synGet( 'syn9909914' )), header=TRUE, stringsAsFactors=FALSE)
+geneInfo = read.table(getFileLocation(synGet( 'syn9909914' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
 
 # get my metadata
 info = read.csv(getFileLocation(synGet( 'syn9908174' )), header=TRUE)
@@ -226,29 +230,11 @@ metadata$color = rainbow(nlevels(metadata$Donor))[metadata$Donor]
 # table(colnames(geneCounts) == as.character(metadata$Sample.Name))
 ```
 
-#### Samples included in analysis
-```{r dataset.info, results="asis"}
-print(xtable(xtabs(~ Dx + Cell.Type, metadata)))
-```
-
-```{r dataset.case.control, results="asis"}
-df = with(metadata, data.frame(Case = length(unique(Donor[Dx == 'SZ'])), Control =length(unique(Donor[Dx == 'CT']))))
-print(xtable(df), include.rownames=FALSE)
-```
-
 ```{r cache=FALSE}
 suppressPackageStartupMessages(library(EnsDb.Hsapiens.v70))
 suppressPackageStartupMessages(library(ggbio))
 txdb = EnsDb.Hsapiens.v70
 data(hg19IdeogramCyto, package = "biovizBase")
-```
-
-
-# QC metrics
-```{r SI_Fig_1}
-qc_metrics = read.csv(getFileLocation(synGet( 'syn9908127' )), header=TRUE, stringsAsFactors=FALSE)
-
-hist(qc_metrics$rRNA.rate, xlab="rRNA rate", main='rRNA rate')
 ```
 
 
@@ -330,7 +316,7 @@ gc()
 
 for( cellType in names(colorDynamicTOM) ){
 
-  file = paste0("Coexpression_modules_", cellType, ".tsv")
+  file = paste0("results/coexpression/modules/Coexpression_modules_", cellType, ".tsv")
 
   write.table( data.frame(ensGene = rownames(vobj), Module = colorDynamicTOM[[cellType]]), file, quote=FALSE, sep="\t", row.names=FALSE)
 }
@@ -354,6 +340,33 @@ cellType = levels(metadata$Cell.Type)[2]
     colors=data.frame(colorDynamicTOM[[cellType]]),
     dendroLabels = FALSE, marAll = c(1, 8, 3, 1),
     main = paste0(cellType, ": Gene dendrogram and module colors, TOM dissimilarity"))
+```
+
+
+```{r read.DE.results}
+
+# Download cell type compostion scores differential expression results
+# get files based on parent
+files = synQuery("select * from file where parentId == 'syn9920368'")
+files = files[grep("Cell_Composition_Score_DE", files$file.name),]
+
+# Download files
+resDEComponments = foreach( file = files$file.id) %do% {
+  data = read.table(synGet(file)@filePath, sep="\t", header=TRUE, stringsAsFactors=FALSE)
+  rownames(data) = data$geneName
+  data[,-1]
+}
+names(resDEComponments) = gsub("Cell_Composition_Score_DE_(.*).tsv", "\\1", files$file.name)
+
+# Download DE analysis of Scz
+resDEall_Scz = read.table(synGet('syn9920404')@filePath, sep="\t", header=TRUE, stringsAsFactors=FALSE)
+rownames(resDEall_Scz) = resDEall_Scz$geneName
+resDEall_Scz = resDEall_Scz[,-1]
+
+# Download DE analysis of Sendai
+resDENormSendai = read.table(synGet('syn9920409')@filePath, sep="\t", header=TRUE, stringsAsFactors=FALSE)
+rownames(resDENormSendai) = resDENormSendai$geneName
+resDENormSendai = resDENormSendai[,-1]
 ```
 
 
@@ -427,13 +440,13 @@ genesMandatory = c( c('CMC_DE.CMC_DE_FDR_1', 'CMC_DE.CMC_DE_FDR_5', names(geneSe
 
 geneSetsSubet = sapply(c(geneset_a, geneset_b, geneset_c, geneset_e, genesMandatory), function(id) geneSetsCombined[[id]])
 
-geneSetsSubet[["COS_DE"]] = with(resDEall, symbol[qvalue < 0.10])
+geneSetsSubet[["COS_DE"]] = with(resDEall_Scz, symbol[qvalue < 0.10])
 geneSetsSubet[["COS_DE"]] = geneSetsSubet[["COS_DE"]][!is.na(geneSetsSubet[["COS_DE"]] )]
 
 geneSetsSubet = c(geneSetsSubet, cellComponentSets)
 genesMandatory = c(genesMandatory, names(cellComponentSets))
 
-geneSetsSubet[['SendaiDE']] = with(resDENorm, symbol[qvalue < 0.05])
+geneSetsSubet[['SendaiDE']] = with(resDENormSendai, symbol[qvalue < 0.05])
 geneSetsSubet[['SendaiDE']] = geneSetsSubet[['SendaiDE']][!is.na(geneSetsSubet[['SendaiDE']])]
 
 
@@ -517,10 +530,10 @@ figDE = ggplot(df3, aes(Gene.Set, cell_Module, fill=pmin(-log10(Pvalue), 10))) +
         panel.grid.minor = element_blank(), aspect.ratio=2) 
 
 
-grid.arrange(figCelComp, figDE, ncol=1)
+# grid.arrange(figCelComp, figDE, ncol=1)
 ```
 
-```{r coexpression.plot, fig.width=30}
+```{r coexpression.plot, fig.height=15}
 df3 = df2[ grep("CMC-mod", df2$Gene.Set, invert=TRUE),]
 
 gs_order = unique(df3$Gene.Set)
@@ -535,7 +548,7 @@ gs_order2 = c(gs_order2, gs_order[grep("^Sendai", gs_order)])
 gs_order2 = c(gs_order2, gs_order[grep("^primar", gs_order)])
 gs_order2 = c(gs_order2, gs_order[grep("^second", gs_order)])
 gs_order2 = c(gs_order2, gs_order[grep("Schi", gs_order)])
-gs_order2 = c(gs_order2, gs_order[grep("DE", gs_order)][-3])
+gs_order2 = c(gs_order2, gs_order[grep("DE", gs_order)][-1])
 
 
 keep = gs_order2[grep("Sendai|^second|^prim|Schi|DE", gs_order2)]
@@ -554,47 +567,26 @@ df3 = df3[df3$cell_Module %in% unique(names(modulesInclude[modulesInclude])), ]
 # make sure all sets are selected
 gs_order[! gs_order %in% gs_order2]
 
-df3$Gene.Set = factor(df3$Gene.Set, gs_order2)
+df3$Gene.Set = factor(df3$Gene.Set, unique(gs_order2))
 
 ratio = nlevels(df3$Gene.Set) / length(unique(df3$cell_Module))
 
-
-ggplot(df3, aes(Gene.Set, cell_Module, fill=pmin(-log10(Pvalue), 30))) + geom_tile(color="white") + coord_flip() +
+ ggplot(df3, aes(Gene.Set, cell_Module, fill=pmin(-log10(Pvalue), 30))) + geom_tile(color="white") +
   scale_fill_gradient(low="grey98", high="red", name =bquote(-log[10]~P)) + 
   ylab("Coexpression module") + theme_bw() + xlab("Gene set") + 
-    theme(axis.text.y = element_text(angle = 0, hjust = 1),
-      axis.text.x = element_blank(), panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank(), aspect.ratio=ratio) 
-
-
+    theme(axis.text.y = element_text(angle = 0, hjust = 1), axis.text.x = element_text(angle=90, hjust=1),
+            panel.grid.minor = element_blank(), aspect.ratio=1/ratio) 
 ```
 
-
-```{r coexpression.plot2, fig.width=30, cache=FALSE}
-
-ggplot(df3, aes(Gene.Set, cell_Module, fill=pmin(-log10(Pvalue), 20))) + geom_tile(color="white") + coord_flip() +
- scale_fill_gradientn(values=c(0, .1, .5, .99999, 1), colours=c("white", "orange", "red", "firebrick", "black"), 
-  name =bquote(-log[10]~P)) +ylab("Coexpression module") + theme_bw() +  xlab("Gene set") + 
-  theme(axis.text.y = element_text(angle = 0, hjust = 1),
-      axis.text.x = element_blank(),panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank(), aspect.ratio=ratio) 
-
-
-
+```{r for.paper}
+# ggplot(df3, aes(Gene.Set, cell_Module, fill=pmin(-log10(Pvalue), 30))) + geom_tile(color="white") + coord_flip() +
+#   scale_fill_gradient(low="grey98", high="red", name =bquote(-log[10]~P)) + 
+#   ylab("Coexpression module") + theme_bw() + xlab("Gene set") + 
+#     theme(axis.text.y = element_text(angle = 0, hjust = 1),
+#       axis.text.x = element_blank(), panel.grid.major = element_blank(), 
+#         panel.grid.minor = element_blank(), aspect.ratio=ratio) 
 ```
 
-
-```{r coexpression.plot3, fig.width=30, cache=FALSE}
-
-ggplot(df3, aes(Gene.Set, cell_Module, fill=color)) + geom_tile(color="white") + coord_flip() +
- scale_fill_manual(values=colors, name =bquote(-log[10]~P)) + 
-  ylab("Coexpression module") + theme_bw(10) +  xlab("Gene set") + 
-  theme(axis.text.y = element_text(angle = 0, hjust = 1),
-      axis.text.x = element_blank(),panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank(), aspect.ratio=ratio) 
-
-
-```
 
 
 
@@ -603,7 +595,7 @@ ggplot(df3, aes(Gene.Set, cell_Module, fill=color)) + geom_tile(color="white") +
 
 
 # color modules
-```{r moduleColors, fig.width=20, cache=FALSE}
+```{r moduleColors, fig.width=15, cache=FALSE}
 dfColor = with(df3, unique(data.frame(cellType, module, cell_Module)))
 dfColor$cellColor = c("orange", "green2")[dfColor$cellType] 
 dfColor$cellColorValue = dfColor$cellType 
@@ -679,11 +671,11 @@ coexprDE = foreach( cellType = levels(metadata$Cell.Type) ) %do% {
     PC
   }
 
-  idx = match(colnames(EVect[[cellType]]), metadata2$Sample.Name)
+  idx = match(colnames(EVect[[cellType]]), metadata$Sample.Name)
 
-  design = model.matrix(~ Dx , metadata2[idx,])
+  design = model.matrix(~ Dx , metadata[idx,])
  
-  fit = lmFit( EVect[[cellType]], design, block=metadata2$Donor[idx], correlation=dupcor$consensus )
+  fit = lmFit( EVect[[cellType]], design, block=metadata$Donor[idx], correlation=dupcor$consensus )
   fit = eBayes(fit)
 
   topTable(fit, coef='DxSZ', number=1e7 , sort.by='P')
