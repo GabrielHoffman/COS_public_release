@@ -649,6 +649,32 @@ ggplot(melt(cibersort*100), aes(reorder(variable, value, median), value, fill=va
   theme(legend.position="none") + ylab("Cell composition score") + xlab("") + coord_flip()
 ```
 
+## There is no case-control difference in cell type scores
+```{r cibersort.disease, fig.width=12, fig.height=5}
+resdf = matrix(ncol=3, nrow=0)
+
+for(cellType in levels(metadata$Cell.Type)){
+  for(score in colnames(cibersort)){
+
+    form = paste(score, '~ Dx')
+
+    idx = (metadata$Cell.Type == cellType)
+
+    fit = lm( form, metadata2[idx,])
+
+    res = coef(summary(fit))[2,4]
+
+    resdf = rbind(resdf, c(cellType, score, res))
+  }
+}
+
+colnames(resdf) = c("CellType", "score", 'pvalue')
+resdf = data.frame(resdf, stringsAsFactors=FALSE)
+resdf$pvalue = as.numeric(resdf$pvalue)
+
+ggplot(resdf, aes(score, -log10(pvalue), fill=CellType)) + geom_bar(stat='identity', position=position_dodge()) + theme_bw(15) + coord_flip() + scale_fill_manual(values=c("orange", "green2")) + xlab('')
+
+```
 
 # Cell composition in Neurons and NPC
 ```{r cibersort.stratify, fig.width=21, fig.height=28}
@@ -782,7 +808,7 @@ metadata2$Fibroblast_Neuron = with(metadata2, Fibroblast*(gsub(" ", "_",Cell.Typ
 
 # form = ~ 0 + Cell.Type + Neuron:Cell.Type + Fibroblast_Neuron 
 # form = ~ 0 + Cell.Type + Neuron:Cell.Type + Myocyte_Neuron + Astrocytes_Neuron + Sex
-form = ~ 0 + Cell.Type + Fibroblast:Cell.Type #  + MEF:Cell.Type
+form = ~ 0 + Cell.Type + Fibroblast:Cell.Type + MEF:Cell.Type
 
 fitList = fitVarPartModel( vobj, form, metadata2, fxn=function(fit){
   residuals(fit) + t(model.matrix(~ 0 + fit$model$Cell.Type) %*% coef(fit)[1:2])
@@ -806,7 +832,7 @@ hcl = hclust( sampleDists )
 ```{r PCA.residuals, cache=FALSE, fig.height=5}
 frac = dcmpResiduals$sdev^2 / sum(dcmpResiduals$sdev^2)   
 xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
-ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='') 
 
 df = data.frame(dcmpResiduals$x[,1:2], name=rownames(dcmpResiduals$x), cellType = metadata$Cell.Type)
 
@@ -820,7 +846,7 @@ plot(as.phylo(hcl), type="fan", tip.color=rainbow(nlevels(metadata$Donor))[metad
 
 ```{r within_between.residuals, echo=FALSE, message=FALSE, cache=FALSE, fig.height=5}     
 simList = list()
-y_range = c()
+y_range = c() 
 for( cellType in rev(levels( metadata2$Cell.Type)) ){
 
   idx = (metadata2$Cell.Type == cellType) & ( metadata2$Exclusion != "maybe")
@@ -845,7 +871,7 @@ do.call("grid.arrange", c(lapply(simList, function(x){
 
 # Link PCA to cell fraction
 ```{r PCA.cell.fraction}
-
+ 
 dcmpAll = prcomp( t(vobj$E) )
 
 idxNeuron = metadata2$Cell.Type == levels(metadata2$Cell.Type)[1]
@@ -890,7 +916,7 @@ make_plot = function( dcmp, data, nPC, n_tests, method="pearson"){
   df = melt( corPC )
   df$value[is.na(df$value)] = 0
 
-  df$signif = c()
+  df$signif = c() 
   for(i in 1:nrow(df)){
     key1 = df$Var1[i]
     key2 = df$Var2[i]
@@ -910,7 +936,7 @@ n_tests = ncol(data) * nPC
 fig1 = make_plot( dcmpAll, data, nPC, n_tests) + theme(legend.justification=c(1,1), legend.position=c(-1,.8)) + ggtitle("All") +
   theme(plot.title=element_text(hjust=0.5))
 
-# NPC
+# NPC 
 data = metadata2[idxNPC,colnames(metadata2) %in% colnames(cibersort)]
 fig2 = make_plot( dcmpNPC, data, nPC, n_tests) + ggtitle("NPC") + ylab("") + 
     theme(legend.position="none", axis.text.y=element_blank(), plot.title=element_text(hjust=0.5), 
@@ -939,6 +965,22 @@ write.table(df, file, quote=FALSE, sep="\t")
 figVp = plotVarPart(sortCols(vpCellFrac2)) + theme(aspect.ratio=1/2.5)      
 figVp
 ```
+
+# accounting for MEF and Fibroblast increases donor contributions
+```{r variancePartition_plain, message=FALSE}
+form = ~ (1|Donor) + (1| Dx) + (1|Sex) + (1|Cell.Type)
+vpCellFrac_plain = fitExtractVarPartModel(vobj, form, metadata2)
+
+form = ~ (1|Donor) + (1| Dx) + (1|Sex) + (1|Cell.Type)
+vpCellFrac_plain2 = fitExtractVarPartModel(exprResiduals, form, metadata2)
+
+
+df = data.frame(original = with(vpCellFrac2, Donor), adjusted = with(vpCellFrac_plain, Donor ))
+
+t.test(df$adjusted, df$original, paired=TRUE)
+
+```
+
 
 # Percent bars
 ```{r Supplement.vpAllbar, fig.height=8, fig.width=15, cache=FALSE, message=FALSE}
@@ -1138,7 +1180,7 @@ kable(resDEall_Scz[resDEall_Scz$qvalue < .20,c(1:4, 7, 8)])
 ```{r DEsubsets}
 metadata2$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
 
-form = ~ Interaction - 1 + MEF + Fibroblast
+form = ~ Interaction - 1 + MEF + Fibroblast + Sex
 
 design = model.matrix( form , metadata2)
 
@@ -1168,13 +1210,13 @@ for( key in names(resList)){
 
 ```{r DE.each.CTC.score}
 for(covariate in c('NULL',colnames(cibersort)) ){
-
+             
   metadata2$Interaction = with(metadata, gsub(" ", ".", paste( Dx, Cell.Type, sep='_')))
 
   if( covariate == 'NULL' ){
     form = ~ Interaction - 1
   }else{
-    form = as.formula(paste('~ Interaction - 1 +', covariate))
+    form = as.formula(paste('~ Interaction - 1 + ', covariate))
   }
 
   design = model.matrix( form , metadata2)
