@@ -135,7 +135,7 @@ fig2 = plot_concordance_logFC( df ) + ylab("logFC from HBCC") + ylab("logFC from
 grid.arrange( fig1, fig2, ncol=2)   
 ```
 
-## Current dataset (COS) compared to CMC and HBCC
+## Combined COS dataset (neuron + NPC) compared to CMC and HBCC
 ```{r CMC_HBCC_COS, fig.height=12, fig.width=12, message=FALSE}
 concordanceDF = matrix(NA, ncol=5, nrow=0)
 
@@ -167,7 +167,7 @@ fig4 = plot_concordance( df ) + ylab("t-statistic from COS/combined") + xlab("t-
 grid.arrange(fig3, fig4, fig1, fig2, ncol=2)   
 ```
 
-# NPC
+# Differential expression in NPCs
 ```{r celltype.specific.NPC, fig.height=12, fig.width=12, message=FALSE}
 df = merge(CMCDE, resDEall_Scz_NPC,by.x="genes", by.y="row.names")
 
@@ -178,7 +178,7 @@ corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
 concordanceDF = rbind(concordanceDF, c("CommonMind", "COS/NPC", "logFC", corValues$estimate,  corValues$p.value))
 
 fig1 = plot_concordance( df ) + ylab("t-statistic from COS/NPC") + xlab("t-statistic from CommonMind") + ggtitle("COS/NPC vs CommonMind")  
-fig2 = plot_concordance_logFC( df ) + ylab("logFC from  COS/NPC") + ylab("logFC from CommonMind") + ggtitle("COS/NPC vs CommonMind")    
+fig2 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/NPC") + xlab("logFC from CommonMind") + ggtitle("COS/NPC vs CommonMind")    
 
 df = merge(CMCDE_HBCC, resDEall_Scz_NPC,by.x="genes", by.y="row.names")
 
@@ -189,12 +189,12 @@ corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
 concordanceDF = rbind(concordanceDF, c("HBCC", "COS/NPC", "logFC", corValues$estimate,  corValues$p.value))
 
 fig3 = plot_concordance( df ) + ylab("t-statistic from COS/NPC") + xlab("t-statistic from HBCC") + ggtitle("COS/NPC vs HBCC")  
-fig4 = plot_concordance_logFC( df ) + ylab("logFC from  COS/NPC") + ylab("logFC from HBCC") + ggtitle("COS/NPC vs HBCC")  
+fig4 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/NPC") + xlab("logFC from HBCC") + ggtitle("COS/NPC vs HBCC")  
 
 grid.arrange( fig1, fig3, fig2, fig4, ncol=2) 
 ```
 
-# Neuron
+# Differential expression in Neurons
 ```{r celltype.specific.Neuron, fig.height=12, fig.width=12, message=FALSE}
 df = merge(CMCDE, resDEall_Scz_Neuron,by.x="genes", by.y="row.names")
 
@@ -206,7 +206,7 @@ concordanceDF = rbind(concordanceDF, c("CommonMind", "COS/Neuron", "logFC", corV
 
 
 fig1 = plot_concordance( df ) + ylab("t-statistic from COS/Neuron") + xlab("t-statistic from CommonMind") + ggtitle("COS/Neuron vs CommonMind")  
-fig2 = plot_concordance_logFC( df ) + ylab("logFC from  COS/Neuron") + ylab("logFC from CommonMind") + ggtitle("COS/Neuron vs CommonMind")    
+fig2 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/Neuron") + xlab("logFC from CommonMind") + ggtitle("COS/Neuron vs CommonMind")    
 
 
 df = merge(CMCDE_HBCC, resDEall_Scz_Neuron,by.x="genes", by.y="row.names")
@@ -218,7 +218,7 @@ corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
 concordanceDF = rbind(concordanceDF, c("HBCC", "COS/Neuron", "logFC", corValues$estimate,  corValues$p.value))
 
 fig3 = plot_concordance( df ) + ylab("t-statistic from COS/Neuron") + xlab("t-statistic from HBCC") + ggtitle("COS/Neuron vs HBCC")  
-fig4 = plot_concordance_logFC( df ) + ylab("logFC from  COS/Neuron") + ylab("logFC from HBCC") + ggtitle("COS/Neuron vs HBCC")    
+fig4 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/Neuron") + xlab("logFC from HBCC") + ggtitle("COS/Neuron vs HBCC")    
 
 grid.arrange( fig1, fig3, fig2, fig4, ncol=2) 
 ```
@@ -264,7 +264,7 @@ collocal = c( "#FF8D1E", "#1E90FF")
 ```
 
 
-## Concordance between logFC 
+## Concordance between COS and CommonMind/HBCC based on logFC 
 ```{r combined.logFC}
 
 statistic = "logFC"
@@ -283,7 +283,7 @@ grid.arrange(fig1, fig2, ncol=1)
 ```
 
 
-## Concordance between t-statistics 
+## Concordance between COS and CommonMind/HBCC based on t-statistics
 ```{r combined.t}
 statistic = "t"
 
@@ -301,7 +301,7 @@ grid.arrange(fig1, fig2, ncol=1)
 ```
 
 
-
+# Concordance between COS and CommonMind/HBCC based on t-statistics, when including different cell type composition scores as covariates
 ```{r DE.all.CTC.scores}
 cibersort = read.table(getFileLocation(synGet( 'syn9908124' )), row.names=1, header=TRUE)
 rownames(cibersort) = gsub("-2$", "R", rownames(cibersort))

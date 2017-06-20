@@ -550,6 +550,7 @@ gs_order2 = c(gs_order2, gs_order[grep("^second", gs_order)])
 gs_order2 = c(gs_order2, gs_order[grep("Schi", gs_order)])
 gs_order2 = c(gs_order2, gs_order[grep("DE", gs_order)][-1])
 
+ gs_order2 = c('6_wk_FB_neuron-Oligodendrocyte_Precursor_Cell', '6_wk_FB_neuron-Neuron', '6_wk_FB_neuron-Myocyte', '6_wk_FB_neuron-MEF', '6_wk_FB_neuron-hiPSC', '6_wk_FB_neuron-Fibroblast', '6_wk_FB_neuron-Astrocytes', 'NPC-Oligodendrocyte_Precursor_Cell', 'NPC-Newly_Formed_Oligodendrocyte', 'NPC-Neuron', 'NPC-MEF', 'NPC-hiPSC', 'NPC-Fibroblast', 'NPC-Astrocytes', 'SendaiDE', 'primary_PSD_(human_core)', 'primary_ARC', 'primary_NMDAR_network', 'primary_PSD-95_(core)', 'primary_mGluR5', 'secondary_FMRP-targets', 'primary_cnvgene', 'primary_kirov_de_novo_CNV', 'primary_SCZ-LoF', 'gws3k-8.6_Schizophrenia', 'CMC_DE.CMC_DE_FDR_1', 'CMC_DE.CMC_DE_FDR_5', 'COS_DE')
 
 keep = gs_order2[grep("Sendai|^second|^prim|Schi|DE", gs_order2)]
 
@@ -563,11 +564,13 @@ modulesInclude = sapply(df$cell_Module, function(module){
 table(modulesInclude)
 
 df3 = df3[df3$cell_Module %in% unique(names(modulesInclude[modulesInclude])), ]
+df3$text_dot = ifelse( (df3$Pvalue < 0.05) & (df3$Pvalue > 0.05 / nrow(df3)) , ".", '')
+df3$text_star = ifelse( df3$Pvalue < 0.05 / nrow(df3), "*", '')
 
 # make sure all sets are selected
 gs_order[! gs_order %in% gs_order2]
 
-df3$Gene.Set = factor(df3$Gene.Set, unique(gs_order2))
+df3$Gene.Set = factor(df3$Gene.Set, rev(gs_order2))
 
 ratio = nlevels(df3$Gene.Set) / length(unique(df3$cell_Module))
 
@@ -575,7 +578,8 @@ ratio = nlevels(df3$Gene.Set) / length(unique(df3$cell_Module))
   scale_fill_gradient(low="grey98", high="red", name =bquote(-log[10]~P)) + 
   ylab("Coexpression module") + theme_bw() + xlab("Gene set") + 
     theme(axis.text.y = element_text(angle = 0, hjust = 1), axis.text.x = element_text(angle=90, hjust=1),
-            panel.grid.minor = element_blank(), aspect.ratio=1/ratio) 
+            panel.grid.minor = element_blank(), aspect.ratio=1/ratio) +
+    geom_text(aes(label=text_dot), vjust = .1) + geom_text(aes(label=text_star), vjust = .83)
 ```
 
 ```{r for.paper}

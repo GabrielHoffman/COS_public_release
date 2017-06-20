@@ -519,6 +519,21 @@ normal_print(paste0("DE genes at FDR < 5%: ", sum(resDENormSendai$qvalue < .05))
 kable(resDENormSendai[resDENormSendai$gene %in% c("MYC", "SOX2", "KLF4", "POU5F1"),c(1:4, 7, 8)])
 ```
 
+```{r, yaminaka.de2, fig.width=9, fig.height=3}
+grid.table(resDENormSendai[resDENormSendai$gene %in% c("MYC", "SOX2", "KLF4", "POU5F1"),c(1:4, 7, 8)])
+```
+
+```{r, Sendai.DE.barplot, fig.height=12}
+idx = grep("^c4", resEnrichSendaiNorm$`Gene Set`, invert=TRUE)
+res = resEnrichSendaiNorm[idx,][1:30,]
+
+res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
+
+ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="navy") + 
+  coord_flip() + theme_bw(10) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+```
+
+
 # Compare Neurons and NPC
 ```{r DE.NPC_neuron}
 
@@ -580,7 +595,7 @@ write.table( resEnrich_NPC, file=file, row.names=TRUE, quote=FALSE, sep="\t")
 cutoff = 0.05
 cutoff2 = 0.01
 df = resDE_cellType
-col = rev(c("> 5%"="grey60", "< 5%"="firebrick", "< 1%"="red"))
+col = rev(c("n.s."="grey60", "< 5%"="firebrick", "< 1%"="red"))
 df$color = names(col)[3]
 df$color[df$qvalue < cutoff] = names(col)[2]
 df$color[df$qvalue < cutoff2] = names(col)[1]
@@ -594,22 +609,49 @@ figVolcano = ggplot(df, aes(logFC, -log10(P.Value), colour=color)) + geom_point(
   figVolcano
 ```
 
-# Enrichments for gense up in Neurons
+# Enrichments for genes up in Neurons
 ```{r DE.NPC_Neuron.enrichment.up_in_Neuron, results="asis"}
 print(xtable( resEnrich_neuron[1:20,-1], digits=c(0, 0, 2, 2, 0, 2, -2) ), include.rownames=FALSE )
 ```
 
+```{r, DE.NPC_Neuron.enrichment.up_in_Neuron_barplot, fig.height=12}
+idx = grep("^c4", resEnrich_neuron$`Gene Set`, invert=TRUE)
+res = resEnrich_neuron[idx,][1:30,]
 
-# Enrichments for gense up in NPCs
+res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
+
+ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="orange") + 
+  coord_flip() + theme_bw(10) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+```
+
+
+# Enrichments for genes up in NPCs
 ```{r DE.NPC_Neuron.enrichment.up_in_NPC, results="asis"}
 print(xtable( resEnrich_NPC[1:20,-1], digits=c(0, 0, 0, 2, 0, 2, -2) ), include.rownames=FALSE )
 ```
 
+
+```{r, DE.NPC_Neuron.enrichment.up_in_NPC_barplot, fig.height=12}
+idx = grep("^c4", resEnrich_NPC$`Gene Set`, invert=TRUE)
+res = resEnrich_NPC[idx,][1:30,]
+
+res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
+
+ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="green2") + 
+  coord_flip() + theme_bw(10) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+```
+
+
+
+
 # Overlap between NPC and neuron
 ```{r NPC_neuron_overlap, fig.width=4, fig.height=4}
 library(VennDiagram)
+library(sets)
 
 # figList = foreach(cutoff = 1:6) %do% {
+jvalue = c()
+i = 1
 for(cutoff in 0:6)  {
 
   idx1 = metadata$Cell.Type == "6_wk_FB_neuron"
@@ -620,15 +662,24 @@ for(cutoff in 0:6)  {
 
   df$both = with(df, neuron & NPC)
 
+  jvalue[i] = set_similarity(as.set(rownames(df)[df$neuron]), as.set(rownames(df)[df$NPC]), method = "Jaccard")
+
   knit_print(paste("cutoff: log2 RPKM >", cutoff) )
   grid.newpage()
   draw.pairwise.venn(area1 = sum(df$neuron), area2 = sum(df$NPC), cross.area = sum(df$both), category = c("Neuron", 
       "NPC"), fill=c("orange", "green2"), lty = "blank", main="asdfasdf")
+  i = i + 1
 }
 
-
-
+df = data.frame(cutoff = 0:6, Jaccard = jvalue)
 ```
+
+```{r cell_type_jaccard}
+ggplot(df, aes(cutoff, Jaccard)) + geom_bar(stat='identity') + theme_bw(14) + ylab("Jaccard similarity") + 
+  xlab("log2 RPKM cutoff") + ylim(0, 1) + ggtitle("Set overlap between genes expressed in neurons and NPCs")
+```
+
+
 
 
 # Cibersort results
@@ -650,8 +701,9 @@ ggplot(melt(cibersort*100), aes(reorder(variable, value, median), value, fill=va
 ```
 
 ## There is no case-control difference in cell type scores
-```{r cibersort.disease, fig.width=12, fig.height=5}
+```{r cibersort.disease, fig.width=6, fig.height=3.2}
 resdf = matrix(ncol=3, nrow=0)
+dfAll_diagnosis_CTC = matrix(ncol=3, nrow=0)
 
 for(cellType in levels(metadata$Cell.Type)){
   for(score in colnames(cibersort)){
@@ -660,11 +712,17 @@ for(cellType in levels(metadata$Cell.Type)){
 
     idx = (metadata$Cell.Type == cellType)
 
-    fit = lm( form, metadata2[idx,])
+    # # linear regression test
+    # fit = lm( form, metadata2[idx,])
+    # res = coef(summary(fit))[2,4]
 
-    res = coef(summary(fit))[2,4]
+    df = data.frame(Dx = metadata2$Dx[idx], score = metadata2[[score]][idx])
+
+    res = wilcox.test( with(df, score[Dx=='CT']), with(df, score[Dx=='SZ']) )$p.value
 
     resdf = rbind(resdf, c(cellType, score, res))
+
+    dfAll_diagnosis_CTC = rbind(dfAll_diagnosis_CTC, data.frame(cellType, Dx = df$Dx, CTC = df$score, score = score))
   }
 }
 
@@ -672,8 +730,22 @@ colnames(resdf) = c("CellType", "score", 'pvalue')
 resdf = data.frame(resdf, stringsAsFactors=FALSE)
 resdf$pvalue = as.numeric(resdf$pvalue)
 
-ggplot(resdf, aes(score, -log10(pvalue), fill=CellType)) + geom_bar(stat='identity', position=position_dodge()) + theme_bw(15) + coord_flip() + scale_fill_manual(values=c("orange", "green2")) + xlab('')
+ggplot(resdf, aes(score, -log10(pvalue), fill=CellType)) + geom_bar(stat='identity', position=position_dodge()) + 
+  theme_bw(15) + coord_flip() + scale_fill_manual(values=c("orange", "green2")) + xlab('') +
+  geom_hline(yintercept=-log10(0.05/nrow(resdf)), lty=2) +
+  geom_hline(yintercept=-log10(0.05), lty=3) +
+  ylab(bquote(log[10]~p-value)) + theme(legend.position="none")
+```
 
+```{r plot_all_CTC_scores, fig.width=12, fig.height=16}
+
+dfAll_diagnosis_CTC$cellType = as.character(dfAll_diagnosis_CTC$cellType)
+dfAll_diagnosis_CTC$cellType[dfAll_diagnosis_CTC$cellType=="6_wk_FB_neuron"] = "iPSC-neuron"
+dfAll_diagnosis_CTC$cellType[dfAll_diagnosis_CTC$cellType=="NPC"] = "iPSC-NPC"
+
+ggplot(dfAll_diagnosis_CTC, aes(Dx, CTC)) + geom_boxplot(aes(fill=Dx)) + 
+  facet_wrap(~ score + cellType, scales = "free_y", ncol=4) + xlab('') + 
+  scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + ylab("Cell Type Composition score")
 ```
 
 # Cell composition in Neurons and NPC
@@ -739,7 +811,7 @@ for(cellType in levels(metadata2$Cell.Type)){
 
 ```{r DE.cellFraction.print, results='asis'}
 for(key in names(resEnrichComponents)){
-  knit_print( key )
+  # knit_print( key )
   print(kable(formTable(resEnrichComponents[[key]][1:10,-1]), caption=key, row.names=FALSE))
 
   file = paste0("results/differential_expression/Cell_Composition/Cell_Composition_Score_enrichments_", key, ".tsv")
@@ -905,6 +977,20 @@ plot( dcmpNPC$x[,1:2], col=col[ metadata$Cell.Type], type='n', xlab=xlab, ylab=y
 text( dcmpNPC$x[,1], dcmpNPC$x[,2], as.character(metadata$Sample.Name[idxNPC]), col=col[2])
 ```
 
+# Color PCA by CTC score
+```{r PCA.color.by.CTC, fig.height=12, fig.width=4}
+df = data.frame(dcmpAll$x, metadata2)
+# colnames(cibersort)
+figList = foreach(cellType = c("Neuron", "hiPSC", "Fibroblast")) %do% {
+  ggplot(df, aes(PC1, PC2, shape=Cell.Type)) + geom_point(aes_string(colour=cellType)) + theme_bw(10) +
+   theme( aspect.ratio=1, plot.title = element_text(hjust = 0.5)) + ggtitle(paste(cellType, 'score')) +
+  scale_colour_gradientn(colours=rev(setColors("red", 3)), name="score") + xlab(xlab) + ylab(ylab)
+}
+
+do.call("grid.arrange", c(figList, ncol=1))
+```
+
+
 # Correlation of CTC scores with principal components
 ```{r PCA.cell.fraction2, fig.height=7, fig.width=16}
 make_plot = function( dcmp, data, nPC, n_tests, method="pearson"){
@@ -924,27 +1010,28 @@ make_plot = function( dcmp, data, nPC, n_tests, method="pearson"){
   }
 
   fig = ggplot(df, aes(Var1, Var2, fill=value)) + geom_tile() + theme_bw(15) + xlab("") + ylab("Cell component") +
-    scale_fill_gradient2(name = "Correlation", low='blue', mid="white", high='red', limits=c(-1,1)) + theme(aspect.ratio=ncol(corPC) / nrow(corPC))
+    scale_fill_gradient2(name = "Correlation", low='blue', mid="white", high='red', limits=c(-1,1)) + theme(aspect.ratio=ncol(corPC) / nrow(corPC),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 
-  fig + geom_text(aes(Var1, Var2, label=signif)) 
+  fig + geom_text(aes(Var1, Var2, label=signif), vjust=1) 
 }
 
 # All
 data = metadata2[,colnames(metadata2) %in% colnames(cibersort)]
 nPC = 2
 n_tests = ncol(data) * nPC
-fig1 = make_plot( dcmpAll, data, nPC, n_tests) + theme(legend.justification=c(1,1), legend.position=c(-1,.8)) + ggtitle("All") +
+fig1 = make_plot( dcmpAll, data, nPC, n_tests) + theme(legend.justification=c(1,1), legend.position=c(-1,.8)) + ggtitle("Combined") +
   theme(plot.title=element_text(hjust=0.5))
+
 
 # NPC 
 data = metadata2[idxNPC,colnames(metadata2) %in% colnames(cibersort)]
-fig2 = make_plot( dcmpNPC, data, nPC, n_tests) + ggtitle("NPC") + ylab("") + 
+fig2 = make_plot( dcmpNPC, data, nPC, n_tests) + ggtitle("iPSC-NPC") + ylab("") + 
     theme(legend.position="none", axis.text.y=element_blank(), plot.title=element_text(hjust=0.5), 
     axis.ticks.y=element_blank())
 
 # Neuron
 data = metadata2[idxNeuron,colnames(metadata2) %in% colnames(cibersort)]
-fig3 = make_plot( dcmpNeuron, data,nPC, n_tests) + ggtitle("Neuron")  + ylab("") + 
+fig3 = make_plot( dcmpNeuron, data,nPC, n_tests) + ggtitle("iPSC-neuron")  + ylab("") + 
     theme(legend.position="none", axis.text.y=element_blank(), plot.title=element_text(hjust=0.5), 
     axis.ticks.y=element_blank())
 
@@ -984,7 +1071,7 @@ t.test(df$adjusted, df$original, paired=TRUE)
 
 # Percent bars
 ```{r Supplement.vpAllbar, fig.height=8, fig.width=15, cache=FALSE, message=FALSE}
-genes = c( "SNX19", 'FURIN', 'TSNARE1', 'CNTN4', 'CLCN3', 'SNAP91', 'FZD6', 'SLITRK2', 'PPP1R12B', "BCAN", 'MYCBP2', 'SMARCE1', "UTY", 'STEAP3')
+genes = c( "SNX19", 'FURIN', 'TSNARE1', 'CNTN4', 'CLCN3', 'SNAP91', 'FZD6', 'SLITRK2', 'PPP1R12B', "BCAN", 'PRRX1', 'SMARCE1', "UTY", 'STEAP3')
 
 idx = match(genes, geneInfo$hgnc_symbol)
 
@@ -1011,17 +1098,18 @@ figStratify_CNTN4 = plotStratify( expr ~ Donor, GE, colorBy=NULL, ylab=ylab, mai
 
 geneName = 'FZD6'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
-figStratify_FZD6 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2)) + scale_fill_manual(values=setColors("deepskyblue2", 2))
+figStratify_FZD6 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis")
 
 geneName = 'SLITRK2'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
-figStratify_SLITRK2 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2)) + scale_fill_manual(values=setColors("deepskyblue2", 2))
+figStratify_SLITRK2 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis")
 
-geneName = 'MYCBP2'
+geneName = 'PRRX1'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
 
-figStratify_MYCBP2 = ggplot(GE, aes(Neuron, expr)) + geom_point() + theme_bw(14) + theme(aspect.ratio=1, plot.title=element_text(hjust=0.5)) + 
-  xlab("Neuron composition score") + ylab(ylab) + ggtitle(geneName) +  geom_smooth(method='lm', se=FALSE) 
+figStratify_PRRX1 = ggplot(GE, aes(Fibroblast, expr)) + geom_point() + theme_bw(14) + theme(aspect.ratio=1,
+ plot.title=element_text(hjust=0.5)) + xlab("Fibroblast composition score") + ylab(ylab) + ggtitle(geneName) + 
+  geom_smooth(method='lm', se=FALSE) + xlim(0, .5)
 
 geneName = 'SMARCE1'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
@@ -1035,8 +1123,8 @@ figStratify_STEAP3 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, colo
 ```{r Fig.variancePartition, fig.width=12, cache=FALSE}
      
 layout = matrix(c(1,2,2,2,3,4,5,6), ncol = 4, byrow = TRUE)   
- fig = figPercent+ theme(legend.position="none")
-grid.arrange(fig, figVp, figStratify_CNTN4, figStratify_FZD6, figStratify_SLITRK2, figStratify_MYCBP2, layout_matrix = layout, heights=c(1,1), padding = unit(0.05, "line"))      
+ fig = figPercent+ theme(legend.position="top")
+grid.arrange(fig, figVp, figStratify_CNTN4, figStratify_FZD6, figStratify_SLITRK2, figStratify_PRRX1, layout_matrix = layout, heights=c(1,1), padding = unit(0.05, "line"))      
 ```
 
 ```{r Fig.variancePartition1, fig.width=6, cache=FALSE}     
@@ -1116,7 +1204,7 @@ plotCorrMatrix( C, main="Correlation between covariates" )
 ```
 
 
-# Differential expression between cases and controls
+# Differential expression between cases and controls in combined NPC + neuron dataset
 ```{r differential.expression_Cell.fraction}
 # form = ~ Dx + Cell.Type + Neuron:Cell.Type + Myocyte_Neuron + Astrocytes_Neuron + Sex
 
@@ -1268,7 +1356,7 @@ ylim = range(c( with(df2, logFC.y - se_beta.x), with(df2, logFC.x + se_beta.y)))
 
 cutoff = 0.20
 cutoff2 = 0.10
-col = rev(c("> 20%"="grey60", "< 20%"="firebrick", "< 10%"="red"))
+col = rev(c("n.s."="grey60", "< 20%"="firebrick", "< 10%"="red"))
 df2$color = names(col)[3]
 df2$color[df2$qvalue < cutoff] = names(col)[2]
 df2$color[df2$qvalue < cutoff2] = names(col)[1]
@@ -1277,14 +1365,16 @@ df2$color = factor(df2$color, names(col))
 ggplot(df2, aes(logFC.x, logFC.y)) + geom_errorbar(aes(ymax = logFC.y + se_beta.y, ymin=logFC.y - se_beta.y), color="grey") +
  geom_errorbarh(aes(xmax = logFC.x + se_beta.x, xmin=logFC.x - se_beta.x), color="grey") +
  geom_point(aes(color=color)) + theme_bw(15) +
-  scale_color_manual(values = array(col), name="FDR") +  xlab("logFC in Neurons") + ylab("logFC in NPCs")  + 
+  scale_color_manual(values = array(col), name="FDR") +  
+  xlab( bquote(log[2]~fold~change~ln~neurons)) + ylab(bquote(log[2]~fold~change~ln~NPCs))  + 
   geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
   theme(legend.position=c(.1,.9), aspect.ratio=1) + geom_abline(color="grey") + xlim(range(xlim, ylim)) + ylim(range(xlim, ylim)) 
 
 
 lim = range(c( with(df2, t.x), with(df2, t.y)))
 ggplot(df2, aes(t.x, t.y)) + geom_point(aes(color=color)) + theme_bw(15) +
-  scale_color_manual(values = array(col), name="FDR") + xlab("t-statistic in Neurons") + ylab("t-statistic in NPCs")  + 
+  scale_color_manual(values = array(col), name="FDR") + 
+  xlab( bquote(t-statistic~ln~neurons)) + ylab(bquote(t-statistic~ln~NPCs)) +
   geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
   theme(legend.position=c(.1,.9), aspect.ratio=1) + geom_abline(color="grey") + xlim(lim) + ylim(lim)
 ```
@@ -1315,6 +1405,21 @@ kable(res[res$qvalue < 0.2,c(1:4, 7, 8)])
 # geneSetsCombined_index = ids2indices( geneSetsCombined, rownames(vobjRename))
 
 # enrichObj_corrected = enrichment_DE_analysis(y=vobj,index=geneSetsCombined_index,design=design, contrast = which(colnames(design) == "DxSZ"), block=metadata$Donor, correlation=dupcor$consensus, nrot=99)
+```
+
+```{r clean_names}
+clean_names = function(df){
+  df$`Gene Set` = sapply(strsplit(as.character(df$`Gene Set`), '_'), function(txt){
+    len = length(txt)
+    res = paste(txt[1:min(c(i,len))], collapse='_')
+
+    if( len > 4 ){
+      res = paste0(res, "\n", paste(txt[5:len], collapse='_'))
+    }
+    res
+    })
+  df
+}
 ```
 
 # Effect of correcting for Fibroblast score on case-control t-statistics in NPCs
@@ -1375,6 +1480,26 @@ kable(resEnrichUp[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ```
 
+
+```{r compare.t.NPC.enrichment.up.enrich, fig.height=4.5, fig.width=9, cache=FALSE}
+res = resEnrichUp[1:10,]
+res = clean_names( res )
+res$`Gene Set` = factor( res$`Gene Set`,  rev(res$`Gene Set`))
+
+fig1 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
+  coord_flip() + theme_bw(8) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+
+
+res = resEnrichDown[1:10,]
+res = clean_names( res )
+res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
+
+fig2 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="blue") + 
+  coord_flip() + theme_bw(8) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+
+do.call("grid.arrange", list(fig1, fig2, ncol=2))
+```
+
 # Effect of correcting for Fibroblast score on case-control t-statistics in Neurons
 ```{r compare.t.neuron, fig.height=4.5, fig.width=9}
 resDE_neuron_NULL = read.table(getFileLocation(synGet( 'syn9920853' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
@@ -1432,6 +1557,24 @@ kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ```
 
 
+```{r compare.t.neuron.enrichment.up.enrich, fig.height=3, fig.width=9}
+res = resEnrichUp[1:10,]
+res = clean_names( res )
+res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
+
+fig1 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
+  coord_flip() + theme_bw(7) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+
+
+res = resEnrichDown[1:10,]
+res = clean_names( res )
+res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
+
+fig2 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="blue") + 
+  coord_flip() + theme_bw(7) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
+
+do.call("grid.arrange", list(fig1, fig2, ncol=2))
+```
 
 
 
