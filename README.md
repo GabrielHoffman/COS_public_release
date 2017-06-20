@@ -1,5 +1,9 @@
 
-<img src="image/study_design.png" width="600">
+# Experimental workflow
+<img src="image/Study_design_v2.png" width="600">
+
+# Computational workflow
+<img src="image/Computational_workflow.png" width="600">
 
 ## Public release of code for analysis for COS cohort 
 
@@ -8,7 +12,7 @@ All code is in R and depends on packages from CRAN and Bioconductor.
 
 Code automatically downloads data from Synapse project.
 
-Data is available from [Synapse](https://www.synapse.org/#!Synapse:syn9907463)
+Data is available from [Synapse](https://www.synapse.org/hiPSC_COS)
 
 Run first analysis in R: 
 ```
