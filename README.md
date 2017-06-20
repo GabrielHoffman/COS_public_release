@@ -1,9 +1,9 @@
 
 # Experimental workflow
-<img src="image/Study_design_v2.png" width="600">
+<img src="image/Study_design_v2.png" width="900">
 
 # Computational workflow
-<img src="image/Computational_workflow.png" width="600">
+<img src="image/Computational_workflow.png" width="900">
 
 ## Public release of code for analysis for COS cohort 
 
