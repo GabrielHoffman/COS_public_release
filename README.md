@@ -19,11 +19,10 @@ Run first analysis in R:
 rmarkdown::render("analysis_public_release.Rmd")
 ```
 
-CNV plots
+CNV plots:
 ```
 rmarkdown::render("CNV.Rmd")
 ```
-
 
 Concordance between this dataset and CommonMind, NIMH HBCC
 
@@ -34,7 +33,7 @@ You must register with Synapse and have permission to read download this data
 rmarkdown::render("compare_differential_expression.Rmd")
 ```
 
-Coexpression analysis
+Coexpression analysis:
 ```
 rmarkdown::render("run_WGCNA.Rmd")
 ```
