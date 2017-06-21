@@ -132,6 +132,8 @@ design = model.matrix(~Cell.Type + Sex, metadata)
 
 # get log2 CPM
 vobj = voom(genes, design, plot=FALSE )
+fit = lmFit(vobj, design)
+exprResid = residuals(fit, vobj)
 ```
 Report p-value testing if genes in the CNV region in donor with that CNV has gene expression pattern that is sidnificantly different from other donors.  Only report if there are > 5 genes in the region
 ```{r analyze.CNV}
@@ -144,7 +146,7 @@ info_CNV$End_hg19 = sapply(strsplit(location, '-'), function(x) as.numeric(x[2])
 
 # Normalize expression data
 # For each gene, substract mean and divide by standard devation
-geneNorm = apply(vobj$E, 1, function(x){
+geneNorm = apply(exprResid, 1, function(x){
   (x - mean(x)) /sd(x)
   })
 
@@ -320,8 +322,6 @@ for(i in 1:length(figList)){
   print(figList[[i]])
 }
 ```
-
-
 
 
 # SessionInfo

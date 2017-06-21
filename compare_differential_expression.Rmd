@@ -135,6 +135,14 @@ fig2 = plot_concordance_logFC( df ) + ylab("logFC from HBCC") + ylab("logFC from
 grid.arrange( fig1, fig2, ncol=2)   
 ```
 
+```{r}
+addLabel = function(fig, txt){
+  arrangeGrob(fig, top = textGrob(txt, x = unit(0, "npc")
+         , y   = unit(1, "npc"), just=c("left","top"),
+         gp=gpar(col="black", fontsize=18)))
+}
+```
+
 ## Combined COS dataset (neuron + NPC) compared to CMC and HBCC
 ```{r CMC_HBCC_COS, fig.height=12, fig.width=12, message=FALSE}
 concordanceDF = matrix(NA, ncol=5, nrow=0)
@@ -164,32 +172,44 @@ corValues = with(df, cor.test(t.x, t.y, method="spearman"))
 concordanceDF = rbind(concordanceDF, c("HBCC", "COS/combined", "t", corValues$estimate,  corValues$p.value))
 fig4 = plot_concordance( df ) + ylab("t-statistic from COS/combined") + xlab("t-statistic from HBCC") + ggtitle("HBCC vs COS/combined (t-statistic)")
 
+fig3 = addLabel(fig3, "A")
+fig4 = addLabel(fig4, "B")
+fig1 = addLabel(fig1, "C")
+fig2 = addLabel(fig2, "D")
+
 grid.arrange(fig3, fig4, fig1, fig2, ncol=2)   
 ```
+
+
 
 # Differential expression in NPCs
 ```{r celltype.specific.NPC, fig.height=12, fig.width=12, message=FALSE}
 df = merge(CMCDE, resDEall_Scz_NPC,by.x="genes", by.y="row.names")
 
 corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("CommonMind", "COS/NPC", "t", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("CommonMind", "hiPSC-NPC", "t", corValues$estimate,  corValues$p.value))
 
 corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("CommonMind", "COS/NPC", "logFC", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("CommonMind", "hiPSC-NPC", "logFC", corValues$estimate,  corValues$p.value))
 
-fig1 = plot_concordance( df ) + ylab("t-statistic from COS/NPC") + xlab("t-statistic from CommonMind") + ggtitle("COS/NPC vs CommonMind")  
-fig2 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/NPC") + xlab("logFC from CommonMind") + ggtitle("COS/NPC vs CommonMind")    
+fig1 = plot_concordance( df ) + ylab("t-statistic from hiPSC-NPC") + xlab("t-statistic from CommonMind") + ggtitle("hiPSC-NPC vs CommonMind")  
+fig2 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  hiPSC-NPC") + xlab("logFC from CommonMind") + ggtitle("hiPSC-NPC vs CommonMind")    
 
 df = merge(CMCDE_HBCC, resDEall_Scz_NPC,by.x="genes", by.y="row.names")
 
 corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("HBCC", "COS/NPC", "t", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("HBCC", "hiPSC-NPC", "t", corValues$estimate,  corValues$p.value))
 
 corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("HBCC", "COS/NPC", "logFC", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("HBCC", "hiPSC-NPC", "logFC", corValues$estimate,  corValues$p.value))
 
-fig3 = plot_concordance( df ) + ylab("t-statistic from COS/NPC") + xlab("t-statistic from HBCC") + ggtitle("COS/NPC vs HBCC")  
-fig4 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/NPC") + xlab("logFC from HBCC") + ggtitle("COS/NPC vs HBCC")  
+fig3 = plot_concordance( df ) + ylab("t-statistic from hiPSC-NPC") + xlab("t-statistic from HBCC") + ggtitle("hiPSC-NPC vs HBCC")  
+fig4 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  hiPSC-NPC") + xlab("logFC from HBCC") + ggtitle("hiPSC-NPC vs HBCC")  
+
+fig1 = addLabel(fig1, "A")
+fig2 = addLabel(fig2, "B")
+fig3 = addLabel(fig3, "C")
+fig4 = addLabel(fig4, "D")
 
 grid.arrange( fig1, fig3, fig2, fig4, ncol=2) 
 ```
@@ -199,26 +219,31 @@ grid.arrange( fig1, fig3, fig2, fig4, ncol=2)
 df = merge(CMCDE, resDEall_Scz_Neuron,by.x="genes", by.y="row.names")
 
 corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("CommonMind", "COS/Neuron", "t", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("CommonMind", "hiPSC-neuron", "t", corValues$estimate,  corValues$p.value))
 
 corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("CommonMind", "COS/Neuron", "logFC", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("CommonMind", "hiPSC-neuron", "logFC", corValues$estimate,  corValues$p.value))
 
 
-fig1 = plot_concordance( df ) + ylab("t-statistic from COS/Neuron") + xlab("t-statistic from CommonMind") + ggtitle("COS/Neuron vs CommonMind")  
-fig2 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/Neuron") + xlab("logFC from CommonMind") + ggtitle("COS/Neuron vs CommonMind")    
+fig1 = plot_concordance( df ) + ylab("t-statistic from hiPSC-neuron") + xlab("t-statistic from CommonMind") + ggtitle("hiPSC-neuron vs CommonMind")  
+fig2 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  hiPSC-neuron") + xlab("logFC from CommonMind") + ggtitle("hiPSC-neuron vs CommonMind")    
 
 
 df = merge(CMCDE_HBCC, resDEall_Scz_Neuron,by.x="genes", by.y="row.names")
 
 corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("HBCC", "COS/Neuron", "t", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("HBCC", "hiPSC-neuron", "t", corValues$estimate,  corValues$p.value))
 
 corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
-concordanceDF = rbind(concordanceDF, c("HBCC", "COS/Neuron", "logFC", corValues$estimate,  corValues$p.value))
+concordanceDF = rbind(concordanceDF, c("HBCC", "hiPSC-neuron", "logFC", corValues$estimate,  corValues$p.value))
 
-fig3 = plot_concordance( df ) + ylab("t-statistic from COS/Neuron") + xlab("t-statistic from HBCC") + ggtitle("COS/Neuron vs HBCC")  
-fig4 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  COS/Neuron") + xlab("logFC from HBCC") + ggtitle("COS/Neuron vs HBCC")    
+fig3 = plot_concordance( df ) + ylab("t-statistic from hiPSC-neuron") + xlab("t-statistic from HBCC") + ggtitle("hiPSC-neuron vs HBCC")  
+fig4 = plot_concordance_logFC( df, square=FALSE ) + ylab("logFC from  hiPSC-neuron") + xlab("logFC from HBCC") + ggtitle("hiPSC-neuron vs HBCC")    
+
+fig1 = addLabel(fig1, "A")
+fig2 = addLabel(fig2, "B")
+fig3 = addLabel(fig3, "C")
+fig4 = addLabel(fig4, "D")
 
 grid.arrange( fig1, fig3, fig2, fig4, ncol=2) 
 ```
@@ -328,24 +353,24 @@ for(covariate in c('NULL',colnames(cibersort)) ){
   # NPC
   df = merge(CMCDE, resDEall_Scz_NPC,by.x="genes", by.y="row.names")
   corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-  concordanceDFall = rbind(concordanceDFall, c("CommonMind", "COS/NPC", covariate, "t", corValues$estimate,  corValues$p.value))
-  fig1 = plot_concordance( df ) + ylab("t-statistic from COS/NPC") + xlab("t-statistic from CommonMind") + ggtitle("COS/NPC vs CommonMind")  
+  concordanceDFall = rbind(concordanceDFall, c("CommonMind", "hiPSC-NPC", covariate, "t", corValues$estimate,  corValues$p.value))
+  fig1 = plot_concordance( df ) + ylab("t-statistic from hiPSC-NPC") + xlab("t-statistic from CommonMind") + ggtitle("hiPSC-NPC vs CommonMind")  
 
   df = merge(CMCDE_HBCC, resDEall_Scz_NPC,by.x="genes", by.y="row.names")
   corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-  concordanceDFall = rbind(concordanceDFall, c("HBCC", "COS/NPC", covariate, "t", corValues$estimate,  corValues$p.value))
-  fig2 = plot_concordance( df ) + ylab("t-statistic from COS/NPC") + xlab("t-statistic from HBCC") + ggtitle("COS/NPC vs HBCC")  
+  concordanceDFall = rbind(concordanceDFall, c("HBCC", "hiPSC-NPC", covariate, "t", corValues$estimate,  corValues$p.value))
+  fig2 = plot_concordance( df ) + ylab("t-statistic from hiPSC-NPC") + xlab("t-statistic from HBCC") + ggtitle("hiPSC-NPC vs HBCC")  
 
   # Neuron
   df = merge(CMCDE, resDEall_Scz_Neuron,by.x="genes", by.y="row.names")
   corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-  concordanceDFall = rbind(concordanceDFall, c("CommonMind", "COS/Neuron", covariate, "t", corValues$estimate,  corValues$p.value))
-  fig3 = plot_concordance( df ) + ylab("t-statistic from COS/Neuron") + xlab("t-statistic from CommonMind") + ggtitle("COS/Neuron vs CommonMind")  
+  concordanceDFall = rbind(concordanceDFall, c("CommonMind", "hiPSC-neuron", covariate, "t", corValues$estimate,  corValues$p.value))
+  fig3 = plot_concordance( df ) + ylab("t-statistic from hiPSC-neuron") + xlab("t-statistic from CommonMind") + ggtitle("hiPSC-neuron vs CommonMind")  
 
   df = merge(CMCDE_HBCC, resDEall_Scz_Neuron,by.x="genes", by.y="row.names")
   corValues = with(df, cor.test(t.x, t.y, method="spearman"))
-  concordanceDFall = rbind(concordanceDFall, c("HBCC", "COS/Neuron", covariate, "t", corValues$estimate,  corValues$p.value))
-  fig4 = plot_concordance( df ) + ylab("t-statistic from COS/Neuron") + xlab("t-statistic from HBCC") + ggtitle("COS/Neuron vs HBCC")  
+  concordanceDFall = rbind(concordanceDFall, c("HBCC", "hiPSC-neuron", covariate, "t", corValues$estimate,  corValues$p.value))
+  fig4 = plot_concordance( df ) + ylab("t-statistic from hiPSC-neuron") + xlab("t-statistic from HBCC") + ggtitle("hiPSC-neuron vs HBCC")  
 
   # grid.arrange( fig1, fig3, fig2, fig4, ncol=2) 
 }

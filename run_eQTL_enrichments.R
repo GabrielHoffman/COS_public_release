@@ -4,6 +4,9 @@
 # Use enrichment_analysis.R to compute enrichment of genes that vary across individuals
 # to genes that are eQTL's in CommonMind
 
+# 1) Generated files
+# 2) Run enrichment analysis on the command line 
+
 
 #################
 # Prepare files #
@@ -68,17 +71,19 @@ write.table(cols, "/hpc/users/hoffmg01/psychgen_ips/run/eqtl_enrichment/colors.c
 # Enrichment analysis #
 #######################
 
+# Run this on the command to run enrichment analysis based on the files generated above
+
 # Compute enrichments based on sorting of genes in $DIR/varPart.tsv.  Genes in the file are listed in $DIR/varPart.bed along 
 # with (fake) coordinates.  Enrichment is computed based on the set of genes in $DIR/CMC_EQTL.bed  
 # $NPERM permutations are used  
 # The colors of lines corresponding to $DIR/varPart.tsv are given in $DIR/colors.csv 
 
-DIR=/hpc/users/hoffmg01/psychgen_ips/run/eqtl_enrichment/
+#DIR=/hpc/users/hoffmg01/psychgen_ips/run/eqtl_enrichment/
 
-SCRIPT_RUN=~/scripts/psychENCODE/EpiMap/enrichment_analysis.R
+# SCRIPT_RUN=~/scripts/psychENCODE/EpiMap/enrichment_analysis.R
 
-NPERM=10000
+# NPERM=10000
 
-$SCRIPT_RUN --bed1 $DIR/varPart.bed --scores1 $DIR/varPart.tsv --bed2 $DIR/CMC_EQTL.bed --nperm $NPERM --confidenceInterval --nthreads 60 --xlim '0 100' --log --colors $DIR/colors.csv  --min_set_size 100 --npoints 40 --outfile $DIR/enrichment_QTL_CTC_${NPERM}.pdf 
+# $SCRIPT_RUN --bed1 $DIR/varPart.bed --scores1 $DIR/varPart.tsv --bed2 $DIR/CMC_EQTL.bed --nperm $NPERM --confidenceInterval --nthreads 60 --xlim '0 100' --log --colors $DIR/colors.csv  --min_set_size 100 --npoints 40 --outfile $DIR/enrichment_QTL_CTC_${NPERM}.pdf 
 
 

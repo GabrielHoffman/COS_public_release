@@ -1334,6 +1334,39 @@ for(covariate in c('NULL',colnames(cibersort)) ){
 }
 ```
 
+```{r volcano.each.celltype, fig.width=12, fig.height=6}
+# Volcano plot
+figVolcanoList = foreach(cellType = names(resList)[1:2]) %do% {
+
+  cutoff = 0.30
+  cutoff2 = 0.10
+  df = resList[[cellType]]
+  col = rev(c("n.s."="grey60", "< 30%"="firebrick", "< 10%"="red"))
+  df$color = names(col)[3]
+  df$color[df$qvalue < cutoff] = names(col)[2]
+  df$color[df$qvalue < cutoff2] = names(col)[1]
+  df$color = factor(df$color, names(col))
+  maxlogFC = max(abs(range(df$logFC)))
+
+  qvalue_cutoff =  with(df, P.Value[which.min((qvalue - .3)^2)])
+  bonferroni_cutoff = 0.30/nrow(df)
+
+  fig = ggplot(df, aes(logFC, -log10(P.Value), colour=color)) + geom_hline(yintercept=-log10(bonferroni_cutoff), lty=3) + ylim(0, 8) +
+    geom_hline(yintercept=-log10(qvalue_cutoff), lty=2, colour="firebrick") + geom_point() + theme_bw(15) +
+    ylab(bquote(-log[10]~p-value)) + xlab(bquote(log[2]~fold~change)) + 
+    scale_color_manual(values = array(col), name="FDR") + 
+    geom_text_repel(data=df[df$color!='n.s.',], aes(label=gene),  min.segment.length = unit(1, "lines"), colour="black", 
+      box.padding = unit(1, "lines"),  point.padding = unit(1, "lines")) + theme(legend.position=c(.9,.9), aspect.ratio=1) + 
+    xlim(-maxlogFC, maxlogFC) + xlim(-5,5) + theme(plot.title = element_text(hjust = 0.5))
+
+  fig = fig + annotate("text", x = 4, y = -log10(bonferroni_cutoff)*1.03, label = "30% Bonferroni", hjust=1) +
+    annotate("text", x = 4, y = -log10(qvalue_cutoff)*1.05, label = "30% FDR", hjust=1) + ggtitle(cellType)
+
+    fig 
+}
+
+do.call("grid.arrange", c(figVolcanoList, ncol=2))
+```
 
 ### Compare logFC between celltypes
 ```{r compare.logFC.celltypes}

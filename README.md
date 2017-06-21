@@ -38,3 +38,9 @@ Coexpression analysis
 ```
 rmarkdown::render("run_WGCNA.Rmd")
 ```
+
+eQTL enrichment analysis:
+```
+# Generate files with run_eQTL_enrichments.R 
+# Run analysis with enrichment_analysis.R based on bash code at the end of run_eQTL_enrichments.R
+```
