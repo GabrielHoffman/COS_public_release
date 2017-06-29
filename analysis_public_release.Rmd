@@ -19,7 +19,7 @@ This includes code and plots for the final version of the paper.  Exploratory an
 <!--- 
 # run analysis
 cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
-rmarkdown::render("analysis_public_release.Rmd")
+rmarkdown::render("analysis_public_release.Rmd", output_dir='./', intermediates_dir='./')
 --->
 
 
@@ -40,6 +40,7 @@ folder = c( "./results/differential_expression/Schizophrenia",
             "./results/differential_expression/Cell_Composition/", 
             "./results/differential_expression/Sendai/", 
             "./results/variancePartition/",
+            "./results/differential_expression/enrichment/",
             "./results/differential_expression/cellType/", 
             "./results/differential_expression/Schizophrenia/CTC_score/")
 
@@ -257,6 +258,298 @@ geneSetsCombined = c(geneSetsCombined_MSigDB, geneSetsMagma)
 geneSetsCombined = geneSetsCombined[sapply(geneSetsCombined, length) > 20]
 geneSetsCombined = geneSetsCombined[sapply(geneSetsCombined, length) < 5000]
 # length(geneSetsCombined)
+```
+
+```{r romerParallel}
+# Gabriel Hoffman
+# April 3, 2017
+#
+# Parallelize romer when statistic="mean"
+
+library(compiler)
+library(foreach)
+library(limma)
+library(foreach)
+
+##  ROMER.R
+romerParallel <- function(y,...) UseMethod("romerParallel")
+
+romerParallel.default <- cmpfun(function(y,index,design=NULL,contrast=ncol(design),array.weights=NULL,block=NULL,correlation=NULL,set.statistic="mean",nrot=9999,shrink.resid=TRUE,n_slices = 100,...)
+# rotation mean-rank version of GSEA (gene set enrichment analysis) for linear models
+# Gordon Smyth and Yifang Hu
+# 27 March 2009.  Last modified 3 May 2015.
+{
+# Issue warning if extra arguments found
+  dots <- names(list(...))
+  if(length(dots)) warning("Extra arguments disregarded: ",sQuote(dots))
+
+# Check y
+  y <- as.matrix(y)
+  ngenes <- nrow(y)
+  n <- ncol(y)
+
+# Check index
+  if(!is.list(index)) index <- list(set=index)
+  nsets <- length(index)
+  if(nsets==0) stop("index is empty")
+  SetSizes <- unlist(lapply(index,length))
+
+# Check design
+  if(is.null(design))
+    stop("design matrix not specified")
+  else {
+    design <- as.matrix(design)
+    if(mode(design) != "numeric") stop("design must be a numeric matrix")
+  }
+  if(nrow(design) != n) stop("row dimension of design matrix must match column dimension of data")
+  ne <- nonEstimable(design)
+  if(!is.null(ne)) cat("Coefficients not estimable:",paste(ne,collapse=" "),"\n")
+  p <- ncol(design)
+  if(p<2L) stop("design needs at least two columns")
+  p0 <- p-1L
+  d <- n-p
+
+# Reform design matrix so that contrast of interest is last column
+  if(length(contrast) == 1L) {
+    contrast <- round(contrast)
+    if(contrast < p) {
+      i <- 1L:p
+      design <- design[,c(i[-contrast],contrast)]
+    }
+  } else {
+    design <- contrastAsCoef(design=design, contrast=contrast, first=FALSE)$design
+  }
+
+# Divide out array weights, if they exist
+  if(!is.null(array.weights)) {
+    if(any(array.weights <= 0)) stop("array.weights must be positive")
+    if(length(array.weights) != n) stop("Length of array.weights doesn't match number of array")
+    design <- design*sqrt(array.weights)
+    y <- t(t(y)*sqrt(array.weights))
+  }
+
+# Divide out correlation structure, it is exists
+  if(!is.null(block)) {
+    block <- as.vector(block)
+    if (length(block) != n) stop("Length of block does not match number of arrays")
+    ub <- unique(block)
+    nblocks <- length(ub)
+    Z <- matrix(block,n,nblocks) == matrix(ub,n,nblocks,byrow = TRUE)
+    cormatrix <- Z %*% (correlation * t(Z))
+    diag(cormatrix) <- 1
+    R <- chol(cormatrix)
+    y <- t(backsolve(R, t(y), transpose = TRUE))
+    design <- backsolve(R, design, transpose = TRUE)
+  }
+
+#   Fit linear model to all genes
+  qr <- qr(design)
+  signc <- sign(qr$qr[p,p])
+  effects <- qr.qty(qr,t(y))
+
+# Sample variances
+  s2 <- colMeans(effects[-(1:p),,drop=FALSE]^2)
+
+#   Estimate global hyper-parameters s0 and d0
+  sv <- squeezeVar(s2,df=d)
+  d0 <- sv$df.prior
+  s02 <- sv$var.prior
+  sd.post <- sqrt(sv$var.post)
+
+# t-statistics and effects (orthogonal residuals)
+  Y <- effects[-(1:p0),,drop=FALSE]
+  YY <- colSums(Y^2)
+  B <- Y[1,]
+  modt <- signc*B/sd.post
+
+  ##  EMP BAYES SHRINK FIRST EFFECT TO REMOVE SYSTEMATIC COMPONENT
+  if(shrink.resid) {
+
+  # Estimate hyperparameter p0 (proportion of DE genes)
+    p.value <- 2*pt(abs(modt),df=d0+d,lower.tail=FALSE)
+    proportion <- 1-propTrueNull(p.value) # proportion of DE probes
+
+  # Estimate hyperparameter v0 (var.prior, variance of true logFC)
+    stdev.unscaled <- rep_len(1/abs(qr$qr[qr$rank,qr$rank]),ngenes)
+    var.unscaled <- stdev.unscaled^2
+    df.total <- rep_len(d,ngenes) + sv$df.prior
+    stdev.coef.lim <- c(0.1, 4)
+    var.prior.lim <- stdev.coef.lim^2/sv$var.prior
+    var.prior <- tmixture.vector(modt, stdev.unscaled, df.total, proportion, var.prior.lim)
+    if (any(is.na(var.prior))) {
+      var.prior[is.na(var.prior)] <- 1/sv$var.prior
+      warning("Estimation of var.prior failed - set to default value")
+    }
+
+  # Estimate posterior probability of DE
+    r <- (var.unscaled + var.prior)/var.unscaled
+    if (sv$df.prior > 10^6)
+      kernel <- modt^2 * (1 - 1/r)/2
+    else
+      kernel <- (1 + df.total)/2 * log((modt^2 + df.total)/(modt^2/r + df.total))
+    lods <- log(proportion/(1 - proportion)) - log(r)/2 + kernel
+    ProbDE <- exp(lods)/(1+exp(lods))
+
+  # Shrink contrast to be like a residual
+    Y[1,] <- Y[1,]*sqrt(var.unscaled/(var.unscaled+var.prior*ProbDE))
+
+  }
+##  END SHRINK
+
+  set.statistic <- match.arg(set.statistic,c("mean","floormean","mean50"))
+
+  if(set.statistic=="mean") {
+
+    # Observed rankings for each set
+    obs.ranks <- matrix(0,ngenes,3)
+    obs.ranks[,1] <- rank(modt)
+    obs.ranks[,2] <- ngenes-obs.ranks[,1]+1
+    obs.ranks[,3] <- rank(abs(modt))
+
+    AllIndices <- unlist(index)
+    Set <- rep(1:nsets,SetSizes)
+    obs.set.ranks <- rowsum(obs.ranks[AllIndices,],group=Set,reorder=FALSE)
+    obs.set.ranks <- obs.set.ranks / SetSizes
+
+    # Random rotations to simulate null hypothesis
+    rot.ranks <- obs.ranks
+    # p.value <- matrix(0,nrow=nsets,ncol=3)
+
+    # n_slices = 100
+
+    p.value = foreach( j = 1:n_slices, .combine=function(A, B){ A+B}, .packages="foreach") %dopar% {
+      cat("Slice:", j, "\n")
+      foreach(i=1:ceiling(nrot/n_slices), .combine=function(A, B){ A+B}) %do% {
+        R <- matrix(rnorm((d+1)),1,d+1)
+        R <- R/sqrt(rowSums(R^2))
+        Br <- R %*% Y
+        s2r <- (YY-Br^2)/d
+
+        if(is.finite(d0)){
+          sdr.post <- sqrt((d0*s02+d*s2r)/(d0+d))
+        }else{
+          sdr.post <- sqrt(s02)
+        }
+
+        modtr <- signc*Br/sdr.post
+      
+        rot.ranks[,1] <- rank(modtr)
+        rot.ranks[,2] <- ngenes-rot.ranks[,1]+1
+        rot.ranks[,3] <- rank(abs(modtr))
+
+        rot.set.ranks <- rowsum(rot.ranks[AllIndices,],group=Set,reorder=FALSE)
+        rot.set.ranks <- rot.set.ranks / SetSizes
+        # p.value <- p.value + (rot.set.ranks >= obs.set.ranks)
+
+        rm(R, Br, s2r, sdr.post, modtr)#, rot.ranks)
+        (rot.set.ranks >= obs.set.ranks)
+      }
+    } 
+
+  } # end "mean"
+
+  if(set.statistic=="floormean") {
+
+  # Observed rankings for each set
+    obs.ranks <- matrix(0,ngenes,3)
+    obs.ranks[,1] <- rank(pmax(modt,0))
+    obs.ranks[,2] <- rank(pmax(-modt,0))
+    obs.ranks[,3] <- rank(pmax(abs(modt),1))
+
+    AllIndices <- unlist(index)
+    Set <- rep(1:nsets,SetSizes)
+    obs.set.ranks <- rowsum(obs.ranks[AllIndices,],group=Set,reorder=FALSE)
+    obs.set.ranks <- obs.set.ranks / SetSizes
+
+  # Random rotations to simulate null hypothesis
+    rot.ranks <- obs.ranks
+    p.value <- matrix(0,nrow=nsets,ncol=3)
+    for(i in 1:nrot)
+    {
+      R <- matrix(rnorm((d+1)),1,d+1)
+      R <- R/sqrt(rowSums(R^2))
+      Br <- R %*% Y
+      s2r <- (YY-Br^2)/d
+
+      if(is.finite(d0))
+        sdr.post <- sqrt((d0*s02+d*s2r)/(d0+d))
+      else
+        sdr.post <- sqrt(s02)
+
+      modtr <- signc*Br/sdr.post
+    
+      rot.ranks[,1] <- rank(pmax(modtr,0))
+      rot.ranks[,2] <- rank(pmax(-modtr,0))
+      rot.ranks[,3] <- rank(pmax(abs(modtr),1))
+
+      rot.set.ranks <- rowsum(rot.ranks[AllIndices,],group=Set,reorder=FALSE)
+      rot.set.ranks <- rot.set.ranks / SetSizes
+      p.value <- p.value + (rot.set.ranks >= obs.set.ranks)
+    } 
+  } # end "floormean"
+
+  if(set.statistic=="mean50") {
+  
+  # Observed rankings for each set
+    s.r <- rank(modt)
+    s.abs.r <- rank(abs(modt))
+
+    s.rank.mixed <- rep(0,nsets)
+    s.rank.up <- rep(0,nsets)
+    s.rank.down <- rep(0,nsets)
+
+    m <- floor((SetSizes+1)/2)
+    for(i in 1:nsets)
+    {
+      mh <- limma:::.meanHalf(s.r[index[[i]]],m[i])
+      s.rank.up[i] <- mh[2] 
+      s.rank.down[i] <- mh[1]
+      s.rank.mixed[i] <- limma:::.meanHalf(s.abs.r[index[[i]]],m[i])[2]
+    } 
+
+  # Random rotations
+    p.value <- matrix(rep(0,nsets*3),nrow=nsets,ncol=3)
+    for(i in 1:nrot)
+    {
+      R <- matrix(rnorm((d+1)),1,d+1)
+      R <- R/sqrt(rowSums(R^2))
+      Br <- R %*% Y
+      s2r <- (YY-Br^2)/d
+
+      if(is.finite(d0))
+        sdr.post <- sqrt((d0*s02+d*s2r)/(d0+d))
+      else
+        sdr.post <- sqrt(s02)
+
+      modtr <- signc*Br/sdr.post
+
+      s.r.2 <- rank(modtr)
+      s.abs.r.2 <- rank(abs(modtr))
+    
+      for(j in 1:nsets)
+      {
+        mh.2 <- limma:::.meanHalf(s.r.2[index[[j]]],m[j])
+
+        s.rank.up.2 <- mh.2[2]
+        s.rank.down.2 <- mh.2[1]
+        s.rank.mixed.2 <- limma:::.meanHalf(s.abs.r.2[index[[j]]],m[j])[2]
+      
+        if(s.rank.up.2 >= s.rank.up[j]) p.value[j,1] <- p.value[j,1]+1
+        if(s.rank.down.2 <= s.rank.down[j]) p.value[j,2] <- p.value[j,2]+1
+        if(s.rank.mixed.2 >= s.rank.mixed[j]) p.value[j,3] <- p.value[j,3]+1
+      }
+    } 
+  } # end "mean50"
+
+  p.value <- (p.value+1)/(nrot+1)
+  colnames(p.value) <- c("Up","Down","Mixed")
+  SetNames <- names(index)
+  if(is.null(SetNames))
+    rownames(p.value) <- 1:nsets
+  else
+    rownames(p.value) <- SetNames
+  cbind(NGenes=SetSizes,p.value)
+})
 ```
 
 
@@ -901,7 +1194,7 @@ hcl = hclust( sampleDists )
 
 
 # Analysis after correcting for cell type composition scores for fibroblasts and MEF
-```{r PCA.residuals, cache=FALSE, fig.height=5}
+```{r PCA.residuals, cache=TRUE, fig.height=5}
 frac = dcmpResiduals$sdev^2 / sum(dcmpResiduals$sdev^2)   
 xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
 ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='') 
@@ -916,7 +1209,7 @@ ggplot(df, aes(PC1, PC2, color=cellType)) + geom_point() + theme_bw(15) + xlab(x
 plot(as.phylo(hcl), type="fan", tip.color=rainbow(nlevels(metadata$Donor))[metadata$Donor], cex=.8)
 ```
 
-```{r within_between.residuals, echo=FALSE, message=FALSE, cache=FALSE, fig.height=5}     
+```{r within_between.residuals, echo=FALSE, message=FALSE, cache=TRUE, fig.height=5}     
 simList = list()
 y_range = c() 
 for( cellType in rev(levels( metadata2$Cell.Type)) ){
@@ -990,6 +1283,18 @@ figList = foreach(cellType = c("Neuron", "hiPSC", "Fibroblast")) %do% {
 do.call("grid.arrange", c(figList, ncol=1))
 ```
 
+```{r PCA.color.by.Elastin, fig.height=4, fig.width=4}
+df = data.frame(dcmpOriginal$x, metadata2, gene=vobj$E['ENSG00000049540',])
+frac = dcmpOriginal$sdev^2 / sum(dcmpOriginal$sdev^2)   
+xlab = paste0("PC1 (", format(100*frac[1], digits=3), "%)", sep='')
+ylab = paste0("PC2 (", format(100*frac[2], digits=3), "%)", sep='')
+
+
+ggplot(df, aes(PC1, PC2, shape=Cell.Type)) + geom_point(aes(colour=gene)) + theme_bw(10) +
+   theme( aspect.ratio=1, plot.title = element_text(hjust = 0.5)) + ggtitle(paste('Elastin expression')) +
+  scale_colour_gradientn(colours=rev(setColors("red", 3)), name=bquote(log[2]~CPM)) + xlab(xlab) + ylab(ylab)
+```
+
 
 # Correlation of CTC scores with principal components
 ```{r PCA.cell.fraction2, fig.height=7, fig.width=16}
@@ -1043,6 +1348,19 @@ form = ~ (1|Donor) + (1| Dx) + (1|Sex) + (1|Cell.Type) + MEF + Fibroblast # +  M
 vpCellFrac2 = fitExtractVarPartModel(vobj, form, metadata2)
 ```
 
+```{r variancePartition.minimal, message=FALSE}
+form = ~ (1|Donor) + (1| Dx) + (1|Sex) + (1|Cell.Type)
+vpCellFrac_minimal = fitExtractVarPartModel(vobj, form, metadata2)
+```
+
+```{r compare.vp}
+median(vpCellFrac2$Donor)
+median(vpCellFrac_minimal$Donor)
+mean(vpCellFrac_minimal$Donor - vpCellFrac2$Donor)
+wilcox.test(vpCellFrac2$Donor, vpCellFrac_minimal$Donor, alternatve = 'greater', paired=TRUE)
+
+```
+
 # all cell fractions
 ```{r varPart.cell_fractions}
 file  = "results/variancePartition/variancePartition_CTC.tsv"
@@ -1071,7 +1389,7 @@ t.test(df$adjusted, df$original, paired=TRUE)
 
 # Percent bars
 ```{r Supplement.vpAllbar, fig.height=8, fig.width=15, cache=FALSE, message=FALSE}
-genes = c( "SNX19", 'FURIN', 'TSNARE1', 'CNTN4', 'CLCN3', 'SNAP91', 'FZD6', 'SLITRK2', 'PPP1R12B', "BCAN", 'PRRX1', 'SMARCE1', "UTY", 'STEAP3')
+genes = c( "SNX19", 'FURIN', 'TSNARE1', 'CNTN4', 'CLCN3', 'SNAP91', 'FZD6', 'QPCT', 'PPP1R12B', "BCAN", 'PRRX1', 'SMARCE1', "UTY", 'STEAP3')
 
 idx = match(genes, geneInfo$hgnc_symbol)
 
@@ -1098,11 +1416,20 @@ figStratify_CNTN4 = plotStratify( expr ~ Donor, GE, colorBy=NULL, ylab=ylab, mai
 
 geneName = 'FZD6'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
-figStratify_FZD6 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis")
+# figStratify_FZD6 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis")
+figStratify_FZD6 = ggplot(GE, aes(Dx, expr,fill=Cell.Type)) + geom_boxplot() + theme_bw() + ylab(bquote(Expression~(log[2]~CPM))) + ggtitle(geneName) + theme(plot.title = element_text(hjust = 0.5), aspect.ratio=1, legend.position='none') + scale_fill_manual(values = c("orange", "green2")) + xlab("Diagnosis")
+
 
 geneName = 'SLITRK2'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
 figStratify_SLITRK2 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis")
+
+
+geneName = 'QPCT'
+GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
+# figStratify_QPCT = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, sort=FALSE) + theme(aspect.ratio=1) + scale_fill_manual(values=c("blue", "red")) + scale_color_manual(values=setColors("deepskyblue2", 2), name="Diagnosis") + scale_fill_manual(values=setColors("deepskyblue2", 2), name="Diagnosis")
+figStratify_QPCT = ggplot(GE, aes(Dx, expr,fill=Cell.Type)) + geom_boxplot() + theme_bw() + ylab(bquote(Expression~(log[2]~CPM))) + ggtitle(geneName) + theme(plot.title = element_text(hjust = 0.5), aspect.ratio=1, legend.position='none') + scale_fill_manual(values = c("orange", "green2")) + xlab("Diagnosis") 
+
 
 geneName = 'PRRX1'
 GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], metadata2)
@@ -1120,14 +1447,14 @@ GE = data.frame(expr = vobj$E[geneInfo$Geneid[geneInfo$geneName==geneName],], me
 figStratify_STEAP3 = plotStratify( expr ~ Dx, GE, ylab=ylab, main=geneName, colorBy=NULL) + theme(aspect.ratio=1) 
 ```
 
-```{r Fig.variancePartition, fig.width=12, cache=FALSE}
-     
-layout = matrix(c(1,2,2,2,3,4,5,6), ncol = 4, byrow = TRUE)   
- fig = figPercent+ theme(legend.position="top")
-grid.arrange(fig, figVp, figStratify_CNTN4, figStratify_FZD6, figStratify_SLITRK2, figStratify_PRRX1, layout_matrix = layout, heights=c(1,1), padding = unit(0.05, "line"))      
+```{r Fig.variancePartition, fig.width=12}
+  layout = matrix(c(1,2,2,2,3,4,5,6), ncol = 4, byrow = TRUE)   
+ fig = figPercent+ theme(legend.position="top") 
+grid.arrange(fig, figVp, figStratify_CNTN4, figStratify_FZD6, figStratify_QPCT, figStratify_PRRX1, layout_matrix = layout, heights=c(1,1), padding = unit(0.05, "line"))       
 ```
 
-```{r Fig.variancePartition1, fig.width=6, cache=FALSE}     
+
+```{r Fig.variancePartition1, fig.width=6}     
 # grid.arrange(figStratify_SMARCE1, figStratify_STEAP3, heights=c(1), padding = unit(0.05, "line"))      
 ```
 
@@ -1220,7 +1547,7 @@ resDEall_Scz = topTable(fit, coef='DxSZ', number=1e7 , sort.by='P')
 resDEall_Scz$qvalue = qvalue( resDEall_Scz$P.Value )$qvalue
 resDEall_Scz$gene = geneInfo$geneName[match(rownames(resDEall_Scz), geneInfo$Geneid)]
 resDEall_Scz$symbol = sub("^(ENSG.*)$", NA, resDEall_Scz$gene)
-
+    
 file = "results/differential_expression/Schizophrenia/COS_DE_combined.tsv"
 df = data.frame(geneName = rownames(resDEall_Scz), resDEall_Scz)
 write.table( df, file=file, row.names=FALSE, quote=FALSE, sep="\t")
@@ -1240,10 +1567,10 @@ write.table( resEnrich, file=file, row.names=TRUE, quote=FALSE, sep="\t")
 #### Volcano plot
 ```{r volcano_Cell.fraction}
 # Volcano plot
-cutoff = 0.20
+cutoff = 0.30
 cutoff2 = 0.10
 df = resDEall_Scz
-col = rev(c("> 20%"="grey60", "< 20%"="firebrick", "< 10%"="red"))
+col = rev(c("n.s."="grey60", "< 30%"="firebrick", "< 10%"="red"))
 df$color = names(col)[3]
 df$color[df$qvalue < cutoff] = names(col)[2]
 df$color[df$qvalue < cutoff2] = names(col)[1]
@@ -1259,9 +1586,9 @@ figVolcano = ggplot(df, aes(logFC, -log10(P.Value), colour=color)) + geom_point(
 figVolcano
 ```
 
-### Genes with FDR < 20%
+### Genes with FDR < 30%
 ```{r DE.genes}
-kable(resDEall_Scz[resDEall_Scz$qvalue < .20,c(1:4, 7, 8)])
+kable(resDEall_Scz[resDEall_Scz$qvalue < .30,c(1:4, 7, 8)])
 ```
 
 # Differential expression within each cell type
@@ -1273,8 +1600,8 @@ form = ~ Interaction - 1 + MEF + Fibroblast + Sex
 design = model.matrix( form , metadata2)
 
 cons_separate_cell_type = makeContrasts( 
-    SZNeuron = InteractionSZ_NPC - InteractionCT_NPC, 
-    SZNPC = InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron,  
+    SZNPC = InteractionSZ_NPC - InteractionCT_NPC, 
+    SZNeuron = InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron,  
     SZinteraction = (InteractionSZ_NPC - InteractionCT_NPC) - (InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron),
     levels = colnames(design))
 
@@ -1294,6 +1621,40 @@ for( key in names(resList)){
   file = paste0("results/differential_expression/Schizophrenia/COS_DE_", key, ".tsv")
   write.table( data.frame(geneName = rownames(resList[[key]]), resList[[key]]), file, quote=FALSE, sep="\t", row.names=FALSE)
 }
+```
+
+```{r volcano.each.celltype, fig.width=12, fig.height=6}
+# Volcano plot      
+figVolcanoList = foreach(cellType = names(resList)[1:2]) %do% {
+   
+  cutoff = 0.30 
+  cutoff2 = 0.10
+  df = resList[[cellType]]
+  col = rev(c("n.s."="grey60", "< 30%"="firebrick", "< 10%"="red"))  
+    df$color = names(col)[3]
+  df$color[df$qvalue < cutoff] = names(col)[2]
+  df$color[df$qvalue < cutoff2] = names(col)[1]
+  df$color = factor(df$color, names(col))
+  maxlogFC = max(abs(range(df$logFC)))
+
+  qvalue_cutoff =  with(df, P.Value[which.min((qvalue - .3)^2)])
+  bonferroni_cutoff = 0.30/nrow(df)
+
+  fig = ggplot(df, aes(logFC, -log10(P.Value), colour=color)) + geom_hline(yintercept=-log10(bonferroni_cutoff), lty=3) + ylim(0, 8) +
+    geom_hline(yintercept=-log10(qvalue_cutoff), lty=2, colour="firebrick") + geom_point() + theme_bw(15) +
+    ylab(bquote(-log[10]~p-value)) + xlab(bquote(log[2]~fold~change)) + 
+    scale_color_manual(values = array(col), name="FDR") + 
+    geom_text_repel(data=df[df$color!='n.s.',], aes(label=gene),  min.segment.length = unit(1, "lines"), colour="black", 
+      box.padding = unit(1, "lines"),  point.padding = unit(1, "lines")) + theme(legend.position=c(.9,.9), aspect.ratio=1) + 
+    xlim(-maxlogFC, maxlogFC) + xlim(-5,5) + theme(plot.title = element_text(hjust = 0.5))
+
+  fig = fig + annotate("text", x = 4, y = -log10(bonferroni_cutoff)*1.03, label = "30% Bonferroni", hjust=1) +
+    annotate("text", x = 4, y = -log10(qvalue_cutoff)*1.05, label = "30% FDR", hjust=1) + ggtitle(cellType)
+
+    fig    
+}
+
+do.call("grid.arrange", c(figVolcanoList, ncol=2))
 ```
 
 ```{r DE.each.CTC.score}
@@ -1319,54 +1680,98 @@ for(covariate in c('NULL',colnames(cibersort)) ){
   fit2 <- contrasts.fit(fit, cons_separate_cell_type)
   fit2 = eBayes(fit2)
 
-  resList = list()
+  resList_local = list()
   for(key in colnames(cons_separate_cell_type)){
     res = topTable(fit2, coef=key, number=Inf, sort.by='P')
     res$qvalue = qvalue( res$P.Value )$qvalue
     res$gene = geneInfo$geneName[match(rownames(res), geneInfo$Geneid)]
-    resList[[key]] = res
+    resList_local[[key]] = res
 
-    for( key in names(resList)){
+    for( key in names(resList_local)){
       file = paste0("results/differential_expression/Schizophrenia/CTC_score/COS_DE_", key, '_', covariate,".tsv")
-      write.table( data.frame(geneName = rownames(resList[[key]]), resList[[key]]), file, quote=FALSE, sep="\t", row.names=FALSE)
+      write.table( data.frame(geneName = rownames(resList_local[[key]]), resList_local[[key]]), file, quote=FALSE, sep="\t", row.names=FALSE)
     }
   }
 }
 ```
 
-```{r volcano.each.celltype, fig.width=12, fig.height=6}
-# Volcano plot
-figVolcanoList = foreach(cellType = names(resList)[1:2]) %do% {
+# Gene set tests
+```{r gene.set.tests, cache=TRUE}
 
-  cutoff = 0.30
-  cutoff2 = 0.10
-  df = resList[[cellType]]
-  col = rev(c("n.s."="grey60", "< 30%"="firebrick", "< 10%"="red"))
-  df$color = names(col)[3]
-  df$color[df$qvalue < cutoff] = names(col)[2]
-  df$color[df$qvalue < cutoff2] = names(col)[1]
-  df$color = factor(df$color, names(col))
-  maxlogFC = max(abs(range(df$logFC)))
+nrot = 9999
+nrot_romer = 999999
 
-  qvalue_cutoff =  with(df, P.Value[which.min((qvalue - .3)^2)])
-  bonferroni_cutoff = 0.30/nrow(df)
+# Define enrichment function
+enrichment_DE_analysis = function( y,index,design, contrast, block, correlation, nrot){
+  
+  enrichObj = list()
 
-  fig = ggplot(df, aes(logFC, -log10(P.Value), colour=color)) + geom_hline(yintercept=-log10(bonferroni_cutoff), lty=3) + ylim(0, 8) +
-    geom_hline(yintercept=-log10(qvalue_cutoff), lty=2, colour="firebrick") + geom_point() + theme_bw(15) +
-    ylab(bquote(-log[10]~p-value)) + xlab(bquote(log[2]~fold~change)) + 
-    scale_color_manual(values = array(col), name="FDR") + 
-    geom_text_repel(data=df[df$color!='n.s.',], aes(label=gene),  min.segment.length = unit(1, "lines"), colour="black", 
-      box.padding = unit(1, "lines"),  point.padding = unit(1, "lines")) + theme(legend.position=c(.9,.9), aspect.ratio=1) + 
-    xlim(-maxlogFC, maxlogFC) + xlim(-5,5) + theme(plot.title = element_text(hjust = 0.5))
+  # cat("romer...\n")
+  enrichObj[['romer']] <- romerParallel(y=y,index=index,design=design, contrast = contrast, block=block, correlation=correlation, nrot=nrot_romer)
 
-  fig = fig + annotate("text", x = 4, y = -log10(bonferroni_cutoff)*1.03, label = "30% Bonferroni", hjust=1) +
-    annotate("text", x = 4, y = -log10(qvalue_cutoff)*1.05, label = "30% FDR", hjust=1) + ggtitle(cellType)
-
-    fig 
+  # cat("roast...\n")
+  enrichObj[['roast']] <- roast(y=y,index=index,design=design, contrast = contrast, block=block, correlation=correlation, nrot=nrot)
+ 
+  return( enrichObj )
 }
 
-do.call("grid.arrange", c(figVolcanoList, ncol=2))
+# sophisticated gene set enrichment 
+# only retain genes with HGNC names
+vobjRename = vobj
+rownames(vobjRename) = geneInfo$geneName[match(rownames(vobjRename), geneInfo$Geneid)]
+rownames(vobjRename) = gsub("^(ENSG.*)$", NA, rownames(vobjRename))
+vobjRename = vobjRename[!is.na(rownames(vobjRename)),]
+
+geneSetsCombined_index = ids2indices( geneSetsCombined, rownames(vobjRename))
 ```
+
+```{r gene.set.tests.run}
+enrichObjCellType = list()             
+for( cons in colnames(cons_separate_cell_type) ){
+  enrichObjCellType[[cons]] = enrichment_DE_analysis(y=vobjRename,index=geneSetsCombined_index,design=design, contrast = cons_separate_cell_type[,cons], block=metadata2$Donor, correlation=dupcor$consensus, nrot=nrot)
+}
+```
+
+# NPC - roast
+```{r NPC.roast, cache=FALSE}
+res = enrichObjCellType[['SZNPC']][['roast']]
+kable(res[1:20,])
+```
+
+# NPC - romer
+```{r NPC.romer, cache=FALSE}
+res = topRomer(enrichObjCellType[['SZNPC']][['romer']], 20, "mixed")
+kable(res[1:20,])
+```
+
+# Neuron - roast
+```{r neuron.roast, cache=FALSE}
+res = enrichObjCellType[['SZNeuron']][['roast']]
+kable(res[1:20,])
+```
+
+# Neuron - romer
+```{r neuron.romer, cache=FALSE}
+res = topRomer(enrichObjCellType[['SZNeuron']][['romer']], 20, "mixed")
+kable(res[1:20,])
+```
+
+```{r save.DE, cache=FALSE}
+for(key in names(enrichObjCellType)){
+  for(test in names(enrichObjCellType[[key]])[1:2]){
+    file = paste0('results/differential_expression/enrichment/enrichment_', gsub("SZ", '', key), '_', test, '.tsv')
+    write.table(enrichObjCellType[[key]][[test]], file, quote=FALSE, sep="\t")
+  }
+}
+```
+
+
+
+
+
+
+
+
 
 ### Compare logFC between celltypes
 ```{r compare.logFC.celltypes}
@@ -1376,7 +1781,7 @@ resList[['SZNPC']]$se_beta = resList[['SZNPC']]$logFC / resList[['SZNPC']]$t
 df = merge( resList[['SZNeuron']], resList[['SZNPC']], by='gene')
 df = merge(df, resDEall_Scz, by="gene")
 
-
+ 
 variables = c("gene", "logFC.x", "logFC.y", "qvalue", "se_beta.x", "se_beta.y", 't.x', 't.y')
 df2 = melt( df[,variables], id.vars=variables )
 df2 = df2[order(df2$qvalue, decreasing=TRUE),]
@@ -1387,9 +1792,9 @@ xlim = range(c( with(df2, logFC.x - se_beta.x), with(df2, logFC.x + se_beta.x)))
 ylim = range(c( with(df2, logFC.y - se_beta.x), with(df2, logFC.x + se_beta.y)))
 
 
-cutoff = 0.20
+cutoff = 0.30
 cutoff2 = 0.10
-col = rev(c("n.s."="grey60", "< 20%"="firebrick", "< 10%"="red"))
+col = rev(c("n.s."="grey60", "< 30%"="firebrick", "< 10%"="red"))
 df2$color = names(col)[3]
 df2$color[df2$qvalue < cutoff] = names(col)[2]
 df2$color[df2$qvalue < cutoff2] = names(col)[1]
@@ -1399,10 +1804,9 @@ ggplot(df2, aes(logFC.x, logFC.y)) + geom_errorbar(aes(ymax = logFC.y + se_beta.
  geom_errorbarh(aes(xmax = logFC.x + se_beta.x, xmin=logFC.x - se_beta.x), color="grey") +
  geom_point(aes(color=color)) + theme_bw(15) +
   scale_color_manual(values = array(col), name="FDR") +  
-  xlab( bquote(log[2]~fold~change~ln~neurons)) + ylab(bquote(log[2]~fold~change~ln~NPCs))  + 
+  xlab( bquote(log[2]~fold~change~ln~hiPSC-neurons)) + ylab(bquote(log[2]~fold~change~ln~hiPSC-NPCs))  + 
   geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
   theme(legend.position=c(.1,.9), aspect.ratio=1) + geom_abline(color="grey") + xlim(range(xlim, ylim)) + ylim(range(xlim, ylim)) 
-
 
 lim = range(c( with(df2, t.x), with(df2, t.y)))
 ggplot(df2, aes(t.x, t.y)) + geom_point(aes(color=color)) + theme_bw(15) +
@@ -1417,13 +1821,13 @@ ggplot(df2, aes(t.x, t.y)) + geom_point(aes(color=color)) + theme_bw(15) +
 ### Neuron
 ```{r DE.SZNeuron}
 res = resList[['SZNeuron']]
-kable(res[res$qvalue < 0.2,c(1:4, 7, 8)])
+kable(res[res$qvalue < 0.3,c(1:4, 7, 8)]) 
 ```
 
 ### NPC
 ```{r DE.SZNPC}
 res = resList[['SZNPC']]
-kable(res[res$qvalue < 0.2,c(1:4, 7, 8)])
+kable(res[res$qvalue < 0.3,c(1:4, 7, 8)]) 
 ```
 
 
@@ -1460,7 +1864,7 @@ We have demonstrated that correcting for the fibroblast score is important, espe
 ```{r compare.t.NPC, fig.height=4.5, fig.width=9}
 resDE_NPC_NULL = read.table(getFileLocation(synGet( 'syn9920865' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
 resDE_NPC_Fibroblast = read.table(getFileLocation(synGet( 'syn9920857' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
-
+ 
 resDE_NPC_NULL = resDE_NPC_NULL[order(resDE_NPC_NULL$geneName),]
 resDE_NPC_Fibroblast = resDE_NPC_Fibroblast[order(resDE_NPC_Fibroblast$geneName),]
 
@@ -1484,7 +1888,7 @@ do.call("grid.arrange", list(fig1, fig2, ncol=2))
 
 ```{r compare.t.NPC.enrichment, result='asis'}
 values = ifelse(df$color != "remaining", 0, 1)
-names(values) = df$gene
+names(values) = df$gene 
 values = values[grep('^ENSG', names(values), invert=TRUE)]
 resEnrichAll = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
 
@@ -1496,7 +1900,7 @@ kable(resEnrichAll[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ```{r compare.t.NPC.enrichment.up, result='asis'}
 # gene enrichment
 values = ifelse(df$color == "top 500", 0, 1)
-names(values) = df$gene
+names(values) = df$gene 
 values = values[grep('^ENSG', names(values), invert=TRUE)]
 resEnrichUp = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
 
@@ -1509,8 +1913,8 @@ kable(resEnrichUp[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ```
 
 ## downonly
-```{r compare.t.NPC.enrichment.down, result='asis'}
-kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
+```{r compare.t.NPC.enrichment.down, result='asis'} 
+kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE) 
 ```
 
 
@@ -1521,7 +1925,6 @@ res$`Gene Set` = factor( res$`Gene Set`,  rev(res$`Gene Set`))
 
 fig1 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
   coord_flip() + theme_bw(8) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
-
 
 res = resEnrichDown[1:10,]
 res = clean_names( res )
@@ -1539,7 +1942,7 @@ resDE_neuron_NULL = read.table(getFileLocation(synGet( 'syn9920853' )), header=T
 resDE_neuron_Fibroblast = read.table(getFileLocation(synGet( 'syn9920845' )), header=TRUE, stringsAsFactors=FALSE, sep="\t")
 
 resDE_neuron_NULL = resDE_neuron_NULL[order(resDE_neuron_NULL$geneName),]
-resDE_neuron_Fibroblast = resDE_neuron_Fibroblast[order(resDE_neuron_Fibroblast$geneName),]
+resDE_neuron_Fibroblast = resDE_neuron_Fibroblast[order(resDE_neuron_Fibroblast$geneName),] 
 
 df = data.frame(gene = resDE_neuron_NULL$gene,none = abs(resDE_neuron_NULL$t), Fibroblast = abs(resDE_neuron_Fibroblast$t) )
 df$difference = with(df, Fibroblast - none)
@@ -1561,7 +1964,7 @@ do.call("grid.arrange", list(fig1, fig2, ncol=2))
 
 ```{r compare.t.neuron.enrichment, result='asis'}
 values = ifelse(df$color != "remaining", 0, 1)
-names(values) = df$gene
+names(values) = df$gene 
 values = values[grep('^ENSG', names(values), invert=TRUE)]
 resEnrichAll = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
 
@@ -1571,7 +1974,7 @@ kable(resEnrichAll[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ## up only
 ```{r compare.t.neuron.enrichment.up, result='asis'}
 # gene enrichment
-values = ifelse(df$color == "top 500", 0, 1)
+values = ifelse(df$color == "top 500", 0, 1) 
 names(values) = df$gene
 values = values[grep('^ENSG', names(values), invert=TRUE)]
 resEnrichUp = enrich_mSigDB( values, list('1'=geneSetsCombined), cutoff = 0.05)
@@ -1591,7 +1994,7 @@ kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 
 
 ```{r compare.t.neuron.enrichment.up.enrich, fig.height=3, fig.width=9}
-res = resEnrichUp[1:10,]
+res = resEnrichUp[1:10,] 
 res = clean_names( res )
 res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
 

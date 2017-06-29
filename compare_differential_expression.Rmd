@@ -36,6 +36,7 @@ synapseLogin()
 ```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
 library(ggplot2)
 library(gridExtra)
+library(grid)
 
 options(xtable.type="html")
 
