@@ -1,6 +1,6 @@
 
 # Experimental workflow
-<img src="image/Study_design_v2.png" width="900">
+<img src="image/Study_design_v2.1.png" width="900">
 
 # Computational workflow
 <img src="image/Computational_workflow.png" width="900">
