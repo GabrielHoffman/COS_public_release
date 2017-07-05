@@ -1666,13 +1666,13 @@ for(covariate in c('NULL',colnames(cibersort)) ){
     form = ~ Interaction - 1
   }else{
     form = as.formula(paste('~ Interaction - 1 + ', covariate))
-  }
+  } 
 
   design = model.matrix( form , metadata2)
 
   cons_separate_cell_type = makeContrasts( 
-      SZNeuron = InteractionSZ_NPC - InteractionCT_NPC, 
-      SZNPC = InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron,  
+      SZNPC = InteractionSZ_NPC - InteractionCT_NPC, 
+      SZNeuron = InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron,  
       SZinteraction = (InteractionSZ_NPC - InteractionCT_NPC) - (InteractionSZ_6_wk_FB_neuron - InteractionCT_6_wk_FB_neuron),
       levels = colnames(design))
 
@@ -1729,31 +1729,31 @@ geneSetsCombined_index = ids2indices( geneSetsCombined, rownames(vobjRename))
 enrichObjCellType = list()             
 for( cons in colnames(cons_separate_cell_type) ){
   enrichObjCellType[[cons]] = enrichment_DE_analysis(y=vobjRename,index=geneSetsCombined_index,design=design, contrast = cons_separate_cell_type[,cons], block=metadata2$Donor, correlation=dupcor$consensus, nrot=nrot)
-}
+} 
 ```
 
-# NPC - roast
+NPC - roast
 ```{r NPC.roast, cache=FALSE}
 res = enrichObjCellType[['SZNPC']][['roast']]
-kable(res[1:20,])
+kable(res[1:20,]) 
 ```
 
 # NPC - romer
 ```{r NPC.romer, cache=FALSE}
 res = topRomer(enrichObjCellType[['SZNPC']][['romer']], 20, "mixed")
-kable(res[1:20,])
+kable(res[1:20,]) 
 ```
 
 # Neuron - roast
 ```{r neuron.roast, cache=FALSE}
 res = enrichObjCellType[['SZNeuron']][['roast']]
-kable(res[1:20,])
+kable(res[1:20,]) 
 ```
 
 # Neuron - romer
 ```{r neuron.romer, cache=FALSE}
 res = topRomer(enrichObjCellType[['SZNeuron']][['romer']], 20, "mixed")
-kable(res[1:20,])
+kable(res[1:20,]) 
 ```
 
 ```{r save.DE, cache=FALSE}
@@ -1762,7 +1762,7 @@ for(key in names(enrichObjCellType)){
     file = paste0('results/differential_expression/enrichment/enrichment_', gsub("SZ", '', key), '_', test, '.tsv')
     write.table(enrichObjCellType[[key]][[test]], file, quote=FALSE, sep="\t")
   }
-}
+} 
 ```
 
 
@@ -1803,20 +1803,20 @@ df2$color = factor(df2$color, names(col))
 ggplot(df2, aes(logFC.x, logFC.y)) + geom_errorbar(aes(ymax = logFC.y + se_beta.y, ymin=logFC.y - se_beta.y), color="grey") +
  geom_errorbarh(aes(xmax = logFC.x + se_beta.x, xmin=logFC.x - se_beta.x), color="grey") +
  geom_point(aes(color=color)) + theme_bw(15) +
-  scale_color_manual(values = array(col), name="FDR") +  
+  scale_color_manual(values = array(col), name="FDR") + geom_abline(color="grey") +  
   xlab( bquote(log[2]~fold~change~ln~hiPSC-neurons)) + ylab(bquote(log[2]~fold~change~ln~hiPSC-NPCs))  + 
-  geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
-  theme(legend.position=c(.1,.9), aspect.ratio=1) + geom_abline(color="grey") + xlim(range(xlim, ylim)) + ylim(range(xlim, ylim)) 
+  geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(.2, "lines"),
+      box.padding = unit(.2, "lines"),  point.padding = unit(.2, "lines")) + 
+  theme(legend.position=c(.1,.9), aspect.ratio=1) + xlim(range(xlim, ylim)) + ylim(range(xlim, ylim)) 
 
 lim = range(c( with(df2, t.x), with(df2, t.y)))
 ggplot(df2, aes(t.x, t.y)) + geom_point(aes(color=color)) + theme_bw(15) +
-  scale_color_manual(values = array(col), name="FDR") + 
-  xlab( bquote(t-statistic~ln~neurons)) + ylab(bquote(t-statistic~ln~NPCs)) +
-  geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene),  min.segment.length = unit(1, "lines")) + 
-  theme(legend.position=c(.1,.9), aspect.ratio=1) + geom_abline(color="grey") + xlim(lim) + ylim(lim)
+  scale_color_manual(values = array(col), name="FDR") + geom_abline(color="grey") + 
+  xlab( bquote(log[2]~fold~change~ln~hiPSC-neurons)) + ylab(bquote(log[2]~fold~change~ln~hiPSC-NPCs)) +
+  geom_text_repel(data=df2[df2$qvalue <cutoff2,], aes(label=gene), min.segment.length = unit(.2, "lines"), box.padding = unit(.2, "lines"),  point.padding = unit(.2, "lines")) + theme(legend.position=c(.1,.9), aspect.ratio=1) + xlim(lim) + ylim(lim)
 ```
 
-## Genes with FDR < 20% within NPC or neuron separately
+## Genes with FDR < 30% within NPC or neuron separately
 
 ### Neuron
 ```{r DE.SZNeuron}
@@ -1882,8 +1882,6 @@ df$color = factor(df$color, c("top 500", "bottom 500", "remaining"))
 fig1 = ggplot(df, aes(none, Fibroblast, colour=color)) + geom_point() + theme_bw(14) + scale_colour_manual(values = col, name = "Change in |t|") + geom_abline(colour="grey", lty=2) + xlab('|t| Original') + ylab('|t| after correcting for Fibroblast score') + theme(legend.position = c(.2, .8))
 
 fig2 =  qplot(df$difference, geom="histogram", bins=50) + theme_bw(14) + xlab("Fiboblast |t| - original |t|") + geom_vline(xintercept=cutoff1, col="red", lty=2) + geom_vline(xintercept=cutoff2, col="blue", lty=2)
-
-do.call("grid.arrange", list(fig1, fig2, ncol=2))
 ```
 
 ```{r compare.t.NPC.enrichment, result='asis'}
@@ -1918,22 +1916,22 @@ kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ```
 
 
-```{r compare.t.NPC.enrichment.up.enrich, fig.height=4.5, fig.width=9, cache=FALSE}
+```{r compare.t.NPC.enrichment.up.enrich, fig.height=9, fig.width=9, cache=FALSE}
 res = resEnrichUp[1:10,]
 res = clean_names( res )
 res$`Gene Set` = factor( res$`Gene Set`,  rev(res$`Gene Set`))
 
-fig1 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
+fig3 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
   coord_flip() + theme_bw(8) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
 
 res = resEnrichDown[1:10,]
 res = clean_names( res )
 res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
 
-fig2 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="blue") + 
+fig4 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="blue") + 
   coord_flip() + theme_bw(8) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
 
-do.call("grid.arrange", list(fig1, fig2, ncol=2))
+do.call("grid.arrange", list(fig1, fig2, fig3, fig4, ncol=2))
 ```
 
 # Effect of correcting for Fibroblast score on case-control t-statistics in Neurons
@@ -1958,8 +1956,6 @@ df$color = factor(df$color, c("top 500", "bottom 500", "remaining"))
 fig1 = ggplot(df, aes(none, Fibroblast, colour=color)) + geom_point() + theme_bw(14) + scale_colour_manual(values = col, name = "Change in |t|") + geom_abline(colour="grey", lty=2) + xlab('|t| Original') + ylab('|t| after correcting for Fibroblast score') + theme(legend.position = c(.2, .8))
 
 fig2 = qplot(df$difference, geom="histogram", bins=50) + theme_bw(14) + xlab("Fiboblast |t| - original |t|") + geom_vline(xintercept=cutoff1, col="red", lty=2) + geom_vline(xintercept=cutoff2, col="blue", lty=2)
-
-do.call("grid.arrange", list(fig1, fig2, ncol=2))
 ```
 
 ```{r compare.t.neuron.enrichment, result='asis'}
@@ -1993,12 +1989,12 @@ kable(resEnrichDown[1:15,-1], digits=c(0, 0, 2, 2, 2, 100), row.names = FALSE)
 ```
 
 
-```{r compare.t.neuron.enrichment.up.enrich, fig.height=3, fig.width=9}
+```{r compare.t.neuron.enrichment.up.enrich, fig.height=9, fig.width=9}
 res = resEnrichUp[1:10,] 
 res = clean_names( res )
 res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
 
-fig1 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
+fig3 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="red") + 
   coord_flip() + theme_bw(7) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
 
 
@@ -2006,10 +2002,10 @@ res = resEnrichDown[1:10,]
 res = clean_names( res )
 res$`Gene Set` = factor( res$`Gene Set`, rev(res$`Gene Set`))
 
-fig2 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="blue") + 
+fig4 = ggplot(res, aes(x=`Gene Set`, y=-log10(Pvalue))) + geom_bar(stat='identity', fill="blue") + 
   coord_flip() + theme_bw(7) + ylab(bquote(Enrichment~(-log[10]~p))) + xlab('')
 
-do.call("grid.arrange", list(fig1, fig2, ncol=2))
+do.call("grid.arrange", list(fig1, fig2, fig3, fig4, ncol=2))
 ```
 
 

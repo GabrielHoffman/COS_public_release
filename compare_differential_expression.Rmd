@@ -377,11 +377,15 @@ for(covariate in c('NULL',colnames(cibersort)) ){
 }
 ```
 
-```{r plot.concordance.rho, fig.width=14}
+```{r plot.concordance.rho, fig.width=16,fig.height=16}
 concordanceDFall = data.frame(concordanceDFall, stringsAsFactors=FALSE)
 colnames(concordanceDFall) = c("dataset1", "dataset2", "covariate", "stat", "rho", "pvalue")
 concordanceDFall$rho = as.numeric(concordanceDFall$rho)
 concordanceDFall$pvalue = as.numeric(concordanceDFall$pvalue)
+
+# rename fibroblast
+concordanceDFall$covariate[with(concordanceDFall, covariate=='Fibroblast')] = 'Fibroblast1'
+concordanceDFall$covariate[with(concordanceDFall, covariate=='MEF')] = 'Fibroblast2'
 
 collocal = c( "orange", "green2")
 
@@ -397,22 +401,23 @@ fig2 = ggplot(subset(concordanceDFall, stat==statistic & dataset1=='HBCC'), aes(
   theme(plot.title=element_text(hjust=0.5), legend.position="top", aspect.ratio=2) +
   coord_flip() + scale_fill_manual(values=collocal) + ggtitle("Concordance with HBCC")
 
- grid.arrange( fig1, fig2, ncol=2) 
-
-```
-
-```{r plot.concordance.pvalue, fig.width=14}
 statistic = "t"   
 
-fig1 = ggplot(subset(concordanceDFall, stat==statistic & dataset1=='CommonMind'), aes(covariate, -log10(pvalue), fill=dataset2)) + geom_bar(stat='identity', position=position_dodge()) +  xlab('')  + ylab(bquote(-log[10]~p-value)) +
+fig3 = ggplot(subset(concordanceDFall, stat==statistic & dataset1=='CommonMind'), aes(covariate, -log10(pvalue), fill=dataset2)) + geom_bar(stat='identity', position=position_dodge()) +  xlab('')  + ylab(bquote(-log[10]~p-value)) +
   guides(fill=guide_legend(title="Post mortem datasets")) + theme_bw(16) +
   theme(plot.title=element_text(hjust=0.5), legend.position="none", aspect.ratio=2) +
   coord_flip() + scale_fill_manual(values=collocal) + ggtitle("Concordance with CommonMind")
 
-fig2 = ggplot(subset(concordanceDFall, stat==statistic & dataset1=='HBCC'), aes(covariate,  -log10(pvalue), fill=dataset2)) + geom_bar(stat='identity', position=position_dodge()) +  xlab('') + ylab(bquote(-log[10]~p-value)) +
+fig4 = ggplot(subset(concordanceDFall, stat==statistic & dataset1=='HBCC'), aes(covariate,  -log10(pvalue), fill=dataset2)) + geom_bar(stat='identity', position=position_dodge()) +  xlab('') + ylab(bquote(-log[10]~p-value)) +
   guides(fill=guide_legend(title="Post mortem datasets")) + theme_bw(16) +
   theme(plot.title=element_text(hjust=0.5), legend.position="none", aspect.ratio=2) +
   coord_flip() + scale_fill_manual(values=collocal) + ggtitle("Concordance with HBCC")
 
- grid.arrange( fig1, fig2, ncol=2) 
+
+fig1 = addLabel(fig1, "A")
+fig2 = addLabel(fig2, "B")
+fig3 = addLabel(fig3, "C")
+fig4 = addLabel(fig4, "D")
+
+ grid.arrange( fig1, fig2, fig3, fig4, ncol=2) 
 ```
