@@ -131,7 +131,7 @@ plot_concordance_logFC = function( df, square=TRUE ){
 ```{r HBCC_vs_CMC, fig.width=12, fig.height=8, message=FALSE}
 df = merge(CMCDE, CMCDE_HBCC,by="genes")
 fig1 = plot_concordance( df ) + ylab("t-statistic from HBCC") + xlab("t-statistic from CommonMind") + ggtitle("HBCC vs CommonMind")  
-fig2 = plot_concordance_logFC( df ) + ylab("logFC from HBCC") + ylab("logFC from CommonMind") + ggtitle("HBCC vs CommonMind")    
+fig2 = plot_concordance_logFC( df ) + ylab("logFC from HBCC") + xlab("logFC from CommonMind") + ggtitle("HBCC vs CommonMind")    
 
 grid.arrange( fig1, fig2, ncol=2)   
 ```

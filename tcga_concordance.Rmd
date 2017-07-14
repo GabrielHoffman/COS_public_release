@@ -1,0 +1,110 @@
+---
+title: "Concordance with TCGA"
+subtitle: 'Public release of data and code from Hoffman, et al. (submitted)'
+author: "Developed by [Gabriel Hoffman](http://gabrielhoffman.github.io/)"
+date: "Run on `r Sys.Date()`"
+documentclass: article
+output: 
+  html_document:
+  toc: true
+---
+
+
+<!--- 
+# run analysis
+cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
+rmarkdown::render("tcga_concordance.Rmd")
+--->
+
+```{r library}
+library(RTCGAToolbox)
+library(foreach)
+library(ggplot2)
+library(doParallel)
+suppressPackageStartupMessages(library(synapseClient))
+
+# registerDoParallel(12)
+
+synapseLogin()
+```
+
+```{r load.DE}
+# private: syn3493992
+CMCDE = read.table(getFileLocation(synGet( 'syn5607603' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+CMCDE$se = CMCDE$logFC / CMCDE$t
+
+# HBCC / DLPFC microarray
+CMCDE_HBCC = read.table(getFileLocation(synGet( 'syn4941553' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+CMCDE_HBCC$se = CMCDE_HBCC$logFC / CMCDE_HBCC$t
+
+
+# Read COS dataset
+resDEall_Scz = read.table(getFileLocation(synGet( 'syn9920404' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+rownames(resDEall_Scz) = resDEall_Scz$geneName
+resDEall_Scz = resDEall_Scz[,-1]
+
+# Read COS dataset: NPC
+resDEall_Scz_NPC = read.table(getFileLocation(synGet( 'syn9920407' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+rownames(resDEall_Scz_NPC) = resDEall_Scz_NPC$geneName
+resDEall_Scz_NPC = resDEall_Scz_NPC[,-1]
+
+# Read COS dataset: Neuron
+resDEall_Scz_Neuron = read.table(getFileLocation(synGet( 'syn9920406' )), header=TRUE, stringsAsFactors=FALSE, sep='\t')
+rownames(resDEall_Scz_Neuron) = resDEall_Scz_Neuron$geneName
+resDEall_Scz_Neuron = resDEall_Scz_Neuron[,-1]
+```
+
+```{r load.tcga}
+setwd('/hpc/users/hoffmg01/psychgen_ips/temp/')
+
+dataset_ids = getFirehoseDatasets()#[1:20]
+
+cancerDEsets = foreach(id = dataset_ids ) %do% {
+
+	dataset = getFirehoseData(dataset=id, runDate = '20160128', Clinic=TRUE, RNAseq_Gene=TRUE)
+
+	res = NULL
+
+	if( nrow(dataset@RNASeqGene) > 1000){
+		# Differential gene expression analysis for gene level RNA data.
+		# Heatmaps are given below.
+		diffGeneExprs = getDiffExpressedGenes(dataObject=dataset,DrawPlots=FALSE,
+		                                   adj.method="BH",adj.pval=1,raw.pval=1,
+		                                   logFC=0,hmTopUpN=1e6,hmTopDownN=1e6)
+
+		if( length(diffGeneExprs) > 0){
+			res = diffGeneExprs[[1]]@Toptable
+		}
+	}
+
+	res[,1:3]
+}
+names(cancerDEsets) = dataset_ids
+```
+
+```{r eval.correlation}
+corResults = matrix(0, nrow=0, ncol=3)
+colnames(corResults) = c("Cancer", "rho", "p.value")
+
+for( cancerType in names(cancerDEsets)){
+
+	if(!is.null(cancerDEsets[[cancerType]] )){
+		# df = merge(CMCDE_HBCC, cancerDEsets[[cancerType]],by.x="MAPPED_genes", by.y="row.names") 
+
+		df = merge(resDEall_Scz_Neuron, cancerDEsets[[cancerType]], by.x = "gene", by="row.names")  
+
+		corValues = with(df, cor.test(t.x, t.y, method="spearman")) 
+		# corValues = with(df, cor.test(logFC.x, logFC.y, method="spearman"))
+
+		corResults = rbind(corResults, c(cancerType, corValues$estimate, corValues$p.value))
+	}
+}
+
+corResults = data.frame(corResults)
+corResults$rho = as.numeric(as.character(corResults$rho))
+corResults$p.value = as.numeric(as.character(corResults$p.value))
+```
+
+```{r plot.correlation}
+ggplot(corResults, aes(Cancer, rho)) + geom_bar(stat="identity") + theme_bw() + coord_flip()
+```

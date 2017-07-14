@@ -1,0 +1,166 @@
+
+---
+title: "Power calculations for grant"
+subtitle: 'Public release of data and code from Hoffman, et al. (submitted)'
+author: "Developed by [Gabriel Hoffman](http://gabrielhoffman.github.io/)"
+date: "Run on `r Sys.Date()`"
+documentclass: article
+output: 
+  html_document:
+  toc: true
+---
+
+# library(pwr)
+# ensGene = 'ENSG00000214776'
+# beta = 2.67
+# mu = mean(vobj$E[ensGene,])
+
+# logFC = log2(mu+2*beta) - log2(mu)
+# logFC
+
+# FC = (mu+2*beta) / mu
+# log2(FC)
+
+
+
+# s = sd(2^vobj$E[ensGene,metadata$Cell.Type == levels(metadata$Cell.Type)[2]])
+# d = abs(FC / s)
+# n1 = 4
+# n2 = 12
+
+# pwr.t2n.test(n1=n1, n2=n2, d=d, sig.level=0.05, alternative="greater")
+
+
+
+# s2 = sd(vobj$E[ensGene,metadata$Cell.Type == levels(metadata$Cell.Type)[2]])
+# pwr.t2n.test(n1=n1, n2=n2, d=abs(logFC/s2), sig.level=0.05, alternative="greater")
+
+<!--- 
+# run analysis
+cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
+rmarkdown::render("evaluate_power.Rmd")
+--->
+
+```{r load.library}
+library(snpStats)
+library(pwr)
+library(foreach)
+library(readr)
+library(edgeR)
+library(data.table)
+library(synapseClient)
+
+synapseLogin()
+```
+
+```{r download}
+
+geneInfo = read.csv(getFileLocation(synGet( 'syn7113731' )), header=TRUE, stringsAsFactors=FALSE) 
+
+# read data
+geneCountsIn = read.table(synGet('syn8413221')@filePath, header=TRUE, sep='\t', check.names = FALSE)
+
+# extract gene counts
+geneCounts = geneCountsIn[,-c(1:6)]
+rownames(geneCounts) = geneCountsIn$Geneid
+
+# identify genes with sufficient expression
+isexpr = rowSums(cpm(geneCounts)>1) >= 5
+
+# normalize counts by total library size
+dgeObj = DGEList(geneCounts[isexpr,])
+dgeObj = calcNormFactors( dgeObj, method="none" )
+
+# convert to log2 RPKM by normalizing by gene legnth
+geneExpr_log2RPKM = rpkm(dgeObj, gene.length=geneCountsIn$Length[isexpr], log=TRUE)
+
+
+expr_CPM = read.table(synGet('syn7253892')@filePath, header=TRUE, sep='\t', check.names = FALSE)
+rownames(expr_CPM) = expr_CPM$ensembl_gene_id
+expr_CPM = expr_CPM[,-c(1:2)]
+colnames(expr_CPM) = gsub("RNA_PFC_", "", colnames(expr_CPM))
+colnames(expr_CPM) = gsub("RNA_BP_PFC", "BP", colnames(expr_CPM))
+
+design = read.table(synGet('syn7253894')@filePath, header=TRUE, sep='\t', check.names = FALSE)
+rownames(design) = colnames(expr_CPM)
+```
+
+```{r load.plink}
+# ensGene = 'ENSG00000214776'
+# rsid = 'rs3863335'
+
+# testSet = data.frame(gene=c('FURIN', 'TMED7', 'GORASP2', 'SLCO2A1', 'ENSG00000214776'),
+# 					rsid = c('rs4702', 'rs56165083', 'rs6433224', 'rs16842260', 'rs3863335'), stringsAsFactors=FALSE)
+
+geneList = array(read.table("/sc/orga/projects/psychgen/resources/commonmind/sczGWS_predixcanOrColoc2.genes", stringsAsFactors=FALSE))
+maxEQTL = read.table("/sc/orga/projects/psychgen/resources/commonmind/gene_maxEqtl_beta.txt", header=TRUE,  stringsAsFactors=FALSE)
+testSet = data.frame(gene=geneList)
+testSet$ensGene = geneInfo$Geneid[match(testSet$gene, geneInfo$geneName)]
+
+idx = match(testSet$ensGene, maxEQTL$gene)
+testSet$rsid[!is.na(idx)] = maxEQTL$snp[idx[!is.na(idx)]]
+testSet = testSet[!is.na(testSet$rsid),]
+
+# Load genotype data
+# only load the site variant of interest
+file = '/hpc/users/hoffmg01/commonmind/data/genotypes/imputation/final/hardcall/CM5-pos-imputed-hardcall95'
+BIM = as.data.table(read_tsv( paste0(file, ".bim"), col_names=FALSE))
+idx = testSet$rsid %in% BIM$X2
+data = read.plink( paste0(file, ".bed"), paste0(file, ".bim"), paste0(file, ".fam"), select.snps=testSet$rsid[idx]) 
+```
+
+```{r eval.power}
+idx = which(testSet$rsid %in% colnames(data$genotypes@.Data))
+
+pwrCalc = foreach(i = idx, .combine=rbind ) %do% {
+
+	ensGene = testSet$ensGene[i]
+	rsid = testSet$rsid[i]
+
+	expr = t(expr_CPM[ensGene,,drop=FALSE])	
+	df = merge(expr, data$genotypes@.Data[,rsid,drop=FALSE], by="row.names")
+	df[,rsid] = as.numeric(df[,rsid])
+	df[,rsid][df[,rsid]==0] = NA
+
+	j = match(df$Row.names, rownames(design))
+
+	D = cbind(SNP=as.numeric(df[,testSet$rsid[i]]), design[j,])
+
+	fit = lm(df[,testSet$ensGene[i]] ~ ., D )
+	summary(fit)
+
+	s = sd(residuals(fit)) / 3
+	logFC = 2*coef(fit)[2]
+
+	n1 = 4
+	n2 = 12
+
+	powerCis = pwr.t2n.test(n1=n1, n2=n2, d=abs(logFC/s), sig.level=0.05, alternative="greater")
+	powerAll = pwr.t2n.test(n1=n1, n2=n2, d=abs(logFC/s), sig.level=0.05/20000)
+
+	data.frame(ensGene = ensGene, rsid = rsid, eqtlp = coef(summary(fit))[2,4], logFC = as.numeric(logFC), s = s, 
+		powerCis=powerCis$power, powerAll= powerAll$power)
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
