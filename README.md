@@ -14,6 +14,26 @@ Code automatically downloads data from Synapse project.
 
 Data is available from [Synapse](https://www.synapse.org/hiPSC_COS)
 
+## Install dependencies
+First, install ENSEMBL v70 annotations
+```
+R CMD INSTALL library/EnsDb.Hsapiens.v70_0.0.tar.gz
+```
+You will need to install additional packages that R requests
+
+## View results pages
+
+[Core analysis](https://rawgit.com/GabrielHoffman/COS_public_release/master/html_results/analysis_public_release.html)
+
+[Differential expression concordance](https://rawgit.com/GabrielHoffman/COS_public_release/master/html_results/compare_differential_expression.html)
+
+[Coexpression](https://rawgit.com/GabrielHoffman/COS_public_release/master/html_results/run_WGCNA.html)
+
+[CNV analysis](https://rawgit.com/GabrielHoffman/COS_public_release/master/html_results/CNV.html)
+
+
+
+## Run Analysis
 Run first analysis in R: 
 ```
 rmarkdown::render("analysis_public_release.Rmd")
