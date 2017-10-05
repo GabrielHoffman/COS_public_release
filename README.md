@@ -19,7 +19,8 @@ First, install ENSEMBL v70 annotations
 ```
 R CMD INSTALL library/EnsDb.Hsapiens.v70_0.0.tar.gz
 ```
-You will need to install additional packages that R requests
+You will need to install additional packages that R requests including the [R SynapseClient](https://github.com/Sage-Bionetworks/rSynapseClient).
+
 
 ## View results pages
 
