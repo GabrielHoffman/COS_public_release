@@ -18,7 +18,7 @@ This includes code and plots for the final version of the paper.  Exploratory an
 
 <!--- 
 # run analysis
-cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
+cd /home/ghoffman/workspace/COS_public_release
 rmarkdown::render("analysis_public_release.Rmd", output_dir='./', intermediates_dir='./')
 --->
 
@@ -1283,6 +1283,30 @@ figList = foreach(cellType = c("Neuron", "hiPSC", "Fibroblast")) %do% {
 do.call("grid.arrange", c(figList, ncol=1))
 ```
 
+# Fit linear model to test difference in CTC scores between cell types
+```{r testDifference}
+# x = with(df, Neuron[Cell.Type==levels(Cell.Type)[1]])
+# y = with(df, Neuron[Cell.Type==levels(Cell.Type)[2]])
+
+# with(df, wilcox.test(x,y))
+
+ctdDifferences = foreach(cellType = colnames(cibersort), .combine=rbind) %do% {
+  form = paste(cellType , '~ Cell.Type')
+  coef(summary(lm(form , df)))[2,c(1,4)]
+}
+ctdDifferences = data.frame(ctdDifferences, Cell.Type = colnames(cibersort), stringsAsFactors=FALSE)
+colnames(ctdDifferences)[2] = "pvalue"
+ctdDifferences$Cell.Type[ctdDifferences$Cell.Type == "MEF"] = "Fibroblast2"
+ctdDifferences$Cell.Type[ctdDifferences$Cell.Type == "Fibroblast"] = "Fibroblast1"
+
+ctdDifferences$Cell.Type = with(ctdDifferences, factor(Cell.Type, rev(sort(Cell.Type))))
+
+ggplot(ctdDifferences, aes(Cell.Type, Estimate)) + geom_bar(stat="identity") + coord_flip() + theme_bw() + ylab("Mean in NPCs - mean in Neurons") + xlab('')
+
+
+ggplot(ctdDifferences, aes(Cell.Type, -log10(pvalue))) + geom_bar(stat="identity") + coord_flip() + theme_bw() + ylab(bquote(-log[10]~p-value)) + xlab('') + geom_hline(yintercept=-log10(0.05)) + geom_hline(yintercept=-log10(0.05/11), linetype="dashed")
+```
+
 ```{r PCA.color.by.Elastin, fig.height=4, fig.width=4}
 df = data.frame(dcmpOriginal$x, metadata2, gene=vobj$E['ENSG00000049540',])
 frac = dcmpOriginal$sdev^2 / sum(dcmpOriginal$sdev^2)   
@@ -1700,6 +1724,10 @@ for(covariate in c('NULL',colnames(cibersort)) ){
 
 nrot = 9999
 nrot_romer = 999999
+
+
+# nrot = 99
+# nrot_romer = 99
 
 # Define enrichment function
 enrichment_DE_analysis = function( y,index,design, contrast, block, correlation, nrot){
@@ -2120,6 +2148,50 @@ grid.arrange(figList[[1]], figList[[2]], figList[[3]], figList[[4]], figList[[5]
   layout_matrix = layout, heights=c(1,1, .4), padding = unit(0.05, "line"))
 ```
 
+```{r CD73.CD271}
+# Check Fibroblast signature, NPC and Neurons for CD73 (NT5E) and CD271 (NGFR)
+geneMarker = c("NT5E", "NGFR")
+ensGenes = with(geneInfo, Geneid[match(geneMarker,geneName ) ])
+
+df2 = t(geneExprlog2RPKM[ensGenes,,drop=FALSE])
+colnames(df2) = geneMarker
+
+df2 = melt( data.frame(ID = colnames(geneExprlog2RPKM), df2, CellType=metadata$Cell.Type)) 
+
+# ggplot(df2, aes(CellType, value)) + geom_boxplot(aes(fill=CellType)) + facet_wrap(~variable, ncol=1) + scale_fill_manual(values= c("orange", 'green2')) + theme_bw() + ylab(bquote(log[2]~RPKM)) + coord_flip()
+
+df3 = with(df2, data.frame(Var1="A", Var2=variable, value=value, Class=CellType))
+```
+
+```{r markers_in_ref_panel}
+# CD73 and CD271 in reference panel
+refPanel = read.table(getFileLocation(synGet( 'syn10138996' )), header=TRUE, stringsAsFactors=FALSE, sep="\t") 
+
+df = melt(t(refPanel[rownames(refPanel) %in% geneMarker,]))
+df$Class = as.character(df$Var1)
+df$Class[grep("Treutlein.MEF", df$Var1)] = "Fibroblast2"
+df$Class[grep("Treutlein.Fibroblast", df$Var1)] = "Fibroblast1"
+df$Class[grep("Treutlein.Myocyte", df$Var1)] = "Myocyte"
+df$Class[grep("Treutlein.Neuron", df$Var1)] = "Neuron"
+df$Class[grep("Choi.hiPSC", df$Var1)] = "hiPSC"
+df$Class = gsub("^Zhang\\.", "", df$Class)
+
+df$Class = factor(df$Class, rev( sort(unique(df$Class))))
+df$value = log2(df$value+.1)
+
+# ggplot(df, aes(Class, value)) + geom_boxplot() + geom_point() + theme_bw() + ylab(bquote(log[2]~RPKM)) + xlab('') + facet_wrap(~Var2) + coord_flip() + ylim(c(-3.5, 4.5))
+
+```
+
+# Check Fibroblast signature, NPC and Neurons for CD73 (NT5E) and CD271 (NGFR)
+```{r combined_marker_plot}
+df_combined = rbind(df, df3)
+df_combined$fill = rep("white", nrow(df_combined))
+df_combined$fill[df_combined$Class=="NPC"] = "green2"
+df_combined$fill[df_combined$Class=="6_wk_FB_neuron"] = "orange"
+
+ggplot(df_combined, aes(Class, value)) + geom_boxplot(aes(fill=fill)) + geom_point() + theme_bw() + ylab(bquote(log[2]~RPKM)) + xlab('') + facet_wrap(~Var2) + coord_flip() + ylim(c(-5, 4.5)) + scale_fill_manual(values = c("green2", "orange", "white") ) + theme(legend.position="none")
+```
 
 
 

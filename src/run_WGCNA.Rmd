@@ -17,7 +17,8 @@ This includes code and plots for the final version of the paper.  Exploratory an
 
 <!--- 
 # run analysis
-cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
+# cd /media/sdb1/workspace/scripts/Brennand/COS/COS_public_release
+cd /home/ghoffman/workspace/COS_public_release
 rmarkdown::render("run_WGCNA.Rmd")
 --->
 
@@ -142,6 +143,18 @@ geneSetsCombined_MSigDB = geneSetsCombined_MSigDB[i]
 
 # read magna genesets
 geneset.files = synQuery('select * from file where parentId == "syn9908161"')
+
+# Add HBCC DE results 
+# Download from 
+# resDE = read.table(getFileLocation(synGet( 'syn4941553' )), header=TRUE)
+
+# HBCC_05 = with(subset(resDE,MAPPED_genes !='.'), MAPPED_genes[adj.P.Val<0.05])
+# HBCC_01 = with(subset(resDE,MAPPED_genes !='.'), MAPPED_genes[adj.P.Val<0.01])
+
+# file = "HBCC_DE.gmt"
+# write( paste(c("HBCC_DE_FDR_1", 'magma', as.character(HBCC_01)), collapse='\t'), file=file)
+# write( paste(c("HBCC_DE_FDR_5", 'magma', as.character(HBCC_05)), collapse='\t'), file=file, append=TRUE)
+
 
 # Download files
 files = sapply( geneset.files$file.id, function(file) synGet(file)@filePath)
@@ -377,6 +390,7 @@ resDENormSendai = resDENormSendai[,-1]
 # resDEComponments
  
 gsid = c(names(geneSetsMagma)[grep("CMC", names(geneSetsMagma))],
+  names(geneSetsMagma)[grep("HBCC", names(geneSetsMagma))],
   names(geneSetsMagma)[grep("gwas", names(geneSetsMagma))],
   names(geneSetsMagma)[grep("cnv", names(geneSetsMagma))], 
   'primary_kirov_de_novo_CNV')
@@ -436,7 +450,7 @@ cellComponentSets = foreach( key = names(resDEComponments)) %do% {
 names(cellComponentSets) = names(resDEComponments)
 
 
-genesMandatory = c( c('CMC_DE.CMC_DE_FDR_1', 'CMC_DE.CMC_DE_FDR_5', names(geneSetsMagma)[grep("CMC-mod", names(geneSetsMagma))]),
+genesMandatory = c( c('CMC_DE.CMC_DE_FDR_1', 'CMC_DE.CMC_DE_FDR_5', "HBCC_DE.HBCC_DE_FDR_1", "HBCC_DE.HBCC_DE_FDR_5", names(geneSetsMagma)[grep("CMC-mod", names(geneSetsMagma))]),
   'gws3k-8.6_Schizophrenia', 'primary_cnvgene', 'primary_kirov_de_novo_CNV', 'primary_SCZ-LoF', 'primary_ARC', 'primary_NMDAR_network', "primary_PSD_(human_core)", 'primary_PSD-95_(core)', 'primary_mGluR5', 'secondary_FMRP-targets')
 
 geneSetsSubet = sapply(c(geneset_a, geneset_b, geneset_c, geneset_e, genesMandatory), function(id) geneSetsCombined[[id]])
@@ -558,7 +572,7 @@ gs_order2 = c(gs_order2, gs_order[grep("^second", gs_order)])
 gs_order2 = c(gs_order2, gs_order[grep("Schi", gs_order)]) 
 gs_order2 = c(gs_order2, gs_order[grep("DE", gs_order)][-1])
 
- gs_order2 = c('6_wk_FB_neuron-Oligodendrocyte_Precursor_Cell', '6_wk_FB_neuron-Neuron', '6_wk_FB_neuron-Myocyte', '6_wk_FB_neuron-MEF', '6_wk_FB_neuron-hiPSC', '6_wk_FB_neuron-Fibroblast', '6_wk_FB_neuron-Astrocytes', 'NPC-Oligodendrocyte_Precursor_Cell', 'NPC-Newly_Formed_Oligodendrocyte', 'NPC-Neuron', 'NPC-MEF', 'NPC-hiPSC', 'NPC-Fibroblast', 'NPC-Astrocytes', 'SendaiDE', 'primary_PSD_(human_core)', 'primary_ARC', 'primary_NMDAR_network', 'primary_PSD-95_(core)', 'primary_mGluR5', 'secondary_FMRP-targets', 'primary_cnvgene', 'primary_kirov_de_novo_CNV', 'primary_SCZ-LoF', 'gws3k-8.6_Schizophrenia', 'CMC_DE.CMC_DE_FDR_1', 'CMC_DE.CMC_DE_FDR_5', 'COS_DE')
+ gs_order2 = c('6_wk_FB_neuron-Oligodendrocyte_Precursor_Cell', '6_wk_FB_neuron-Neuron', '6_wk_FB_neuron-Myocyte', '6_wk_FB_neuron-MEF', '6_wk_FB_neuron-hiPSC', '6_wk_FB_neuron-Fibroblast', '6_wk_FB_neuron-Astrocytes', 'NPC-Oligodendrocyte_Precursor_Cell', 'NPC-Newly_Formed_Oligodendrocyte', 'NPC-Neuron', 'NPC-MEF', 'NPC-hiPSC', 'NPC-Fibroblast', 'NPC-Astrocytes', 'SendaiDE', 'primary_PSD_(human_core)', 'primary_ARC', 'primary_NMDAR_network', 'primary_PSD-95_(core)', 'primary_mGluR5', 'secondary_FMRP-targets', 'primary_cnvgene', 'primary_kirov_de_novo_CNV', 'primary_SCZ-LoF', 'gws3k-8.6_Schizophrenia', "HBCC_DE.HBCC_DE_FDR_1", "HBCC_DE.HBCC_DE_FDR_5", 'CMC_DE.CMC_DE_FDR_1', 'CMC_DE.CMC_DE_FDR_5', 'COS_DE')
 
 keep = gs_order2[grep("Sendai|^second|^prim|Schi|DE", gs_order2)]
 
