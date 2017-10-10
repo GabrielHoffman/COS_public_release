@@ -1725,9 +1725,8 @@ for(covariate in c('NULL',colnames(cibersort)) ){
 nrot = 9999
 nrot_romer = 999999
 
-
-# nrot = 99
-# nrot_romer = 99
+nrot = 99
+nrot_romer = 99
 
 # Define enrichment function
 enrichment_DE_analysis = function( y,index,design, contrast, block, correlation, nrot){
@@ -2194,6 +2193,65 @@ ggplot(df_combined, aes(Class, value)) + geom_boxplot(aes(fill=fill)) + geom_poi
 ```
 
 
+
+
+# mesenchymal vs neural crest markers
+ ```{r mesenchymal.neural_crest}
+
+genes = DGEList(counts=geneCounts)
+genes = calcNormFactors(genes)
+geneExprlog2RPKM_all = rpkm( genes, geneInfo$Length, log=TRUE )
+
+# 'VTN'
+geneList = list(Mesenchymal=c('NT5E', 'VIM', 'THBS1', 'CDH2',  'FN1', 'ENG', 'ITGB1', 'CD44', 'THY1'), 
+  "Neural crest" = c('NGFR', 'TFAP2A', 'NR2F1', 'NR2F2', 'TWIST1', 'SNAI1', 'SNAI2', 'RARA', 'ALX3', 'ALX4', 'PAX3', 'SOX9', 'SOX10', 'MYC', 'SEMA3A', 'NOTCH1', 'NOTCH2', 'ASCL1', 'CHD7', 'FOXD3', 'NEUROG1', 'NEUROG2', 'NEUROG3', 'NUMB', 'VIM', 'BMP4', 'BMP7')) 
+
+for(key in names(geneList)){
+
+  # Check Fibroblast signature, NPC and Neurons for CD73 (NT5E) and CD271 (NGFR)
+  geneMarker = sort(geneList[[key]])
+  ensGenes = with(geneInfo, Geneid[match(geneMarker,geneName ) ])
+
+  df2 = t(geneExprlog2RPKM_all[ensGenes,,drop=FALSE])
+  colnames(df2) = geneMarker
+
+  df2 = melt( data.frame(ID = colnames(geneExprlog2RPKM_all), df2, CellType=metadata$Cell.Type)) 
+
+  df3 = with(df2, data.frame(Var1="A", Var2=variable, value=value, Class=CellType))
+
+  # CD73 and CD271 in reference panel
+  refPanel = read.table(getFileLocation(synGet( 'syn10138996' )), header=TRUE, stringsAsFactors=FALSE, sep="\t") 
+
+  df = melt(t(refPanel[rownames(refPanel) %in% geneMarker,]))
+  df$Class = as.character(df$Var1)
+  df$Class[grep("Treutlein.MEF", df$Var1)] = "Fibroblast2"
+  df$Class[grep("Treutlein.Fibroblast", df$Var1)] = "Fibroblast1"
+  df$Class[grep("Treutlein.Myocyte", df$Var1)] = "Myocyte"
+  df$Class[grep("Treutlein.Neuron", df$Var1)] = "Neuron"
+  df$Class[grep("Choi.hiPSC", df$Var1)] = "hiPSC"
+  df$Class = gsub("^Zhang\\.", "", df$Class)
+
+  df$Class = factor(df$Class, rev( sort(unique(df$Class))))
+  df$value = log2(df$value+.1)
+
+
+  df_combined = rbind(df, df3)
+  df_combined$fill = rep("white", nrow(df_combined))
+  df_combined$fill[df_combined$Class=="NPC"] = "green2"
+  df_combined$fill[df_combined$Class=="6_wk_FB_neuron"] = "orange"
+
+  figList[[key]] = ggplot(df_combined, aes(Class, value)) + geom_boxplot(aes(fill=fill)) + geom_point(size=1) + theme_bw() + ylab(bquote(log[2]~RPKM)) + xlab('') + facet_wrap(~Var2, ncol=5) + coord_flip()  + scale_fill_manual(values = c("green2", "orange", "white") ) + theme(legend.position="none") + ggtitle(key) + theme(plot.title = element_text(hjust = 0.5)) + ylim(c(-8, 11))
+}
+```
+
+```{r mesenchymal, cache=FALSE, fig.height=4, fig.width=8} 
+figList[['Mesenchymal']]
+```
+
+
+```{r neural_crest, cache=FALSE, fig.height=12, fig.width=8} 
+figList[["Neural crest"]]
+```
 
 # SessionInfo
 ```{r}
